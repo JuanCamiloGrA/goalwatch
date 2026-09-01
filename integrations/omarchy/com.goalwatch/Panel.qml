@@ -36,6 +36,9 @@ Panel {
   property int auditTotal: 0
   property int auditOffset: 0
   property int auditLimit: 50
+  property int auditRetentionDays: 7
+  property int auditMaxRecords: 2000
+  property double auditMaxContentBytes: 536870912
   property string auditOutcome: "all"
   property string auditError: ""
   property bool auditQueryQueued: false
@@ -265,6 +268,9 @@ Panel {
       auditRecords = Array.isArray(response.records) ? response.records : []
       auditTotal = Number(response.total || 0)
       auditOffset = Number(response.offset || 0)
+      auditRetentionDays = Number(response.retention_days || 7)
+      auditMaxRecords = Number(response.max_records || 2000)
+      auditMaxContentBytes = Number(response.max_content_bytes || 536870912)
       if (auditRecords.length > 0)
         loadAudit(Number(auditRecords[0].id))
       else
@@ -934,7 +940,7 @@ Panel {
                 font.letterSpacing: 0.8
               }
               Text {
-                text: "Screenshots, prompts, raw responses and failures"
+                text: "Screenshots and raw responses · private 7-day history"
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -1083,6 +1089,8 @@ Panel {
               Text {
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: root.auditTotal + " LOCAL RECORD" + (root.auditTotal === 1 ? "" : "S")
+                  + " · " + root.auditRetentionDays + " DAYS · " + root.auditMaxRecords + " MAX"
+                  + " · " + Math.round(root.auditMaxContentBytes / 1048576) + " MiB"
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption

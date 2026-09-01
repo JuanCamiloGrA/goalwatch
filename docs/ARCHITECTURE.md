@@ -35,12 +35,17 @@ Omarchy bar ── toggle/settings ───────────────
   and an isolated process group that is killed as a unit on timeout or overflow.
 - Gemini receives one stateless `generateContent` request per due check. The
   response uses a JSON schema with exactly `alert` and `complement`. Response
-  bodies are capped at 512 KiB and HTTP redirects are never followed.
+  bodies are capped at 512 KiB, HTTP redirects are never followed, and one
+  monotonic deadline budget, enforced by `ITIMER_REAL`, covers client setup and
+  the complete urllib exchange.
+  Provider-controlled HTTP and usage metadata are validated before a decision
+  can leave the client.
 - The audit store owns a descriptor-anchored SQLite index plus one mode-`0600`
   JPEG per request. A shared file lock spans each request and viewer query; the
   explicit clear operation requires an exclusive lock and a stopped service.
   Request persistence is a precondition for network I/O, while response
-  persistence is a precondition for an alert.
+  persistence is a precondition for an alert. Retention is bounded by age, row,
+  content, database-page, and WAL quotas.
 - Quickshell watches an atomic runtime-state file. It never receives the API key
   and does not call Gemini itself. Dynamic runtime text is length-capped and
   rendered explicitly as plain text.
@@ -53,9 +58,22 @@ Omarchy bar ── toggle/settings ───────────────
   atomically installs the companion, preserves every unrelated community
   plugin entry, and only then changes the active source. Disabling changes the
   source first, then performs idempotent companion cleanup.
-- Config, runtime state, metrics, and audit paths are anchored to no-follow directory
-  descriptors. Atomic replacements cannot traverse a substituted file symlink,
-  and Markdown is read from one no-follow descriptor after size/type checks.
+- Config, runtime state, metrics, and audit paths are anchored to no-follow
+  directory descriptors. SQLite main files are opened with `O_NOFOLLOW`,
+  checked by inode, and connected through `/proc/self/fd`; they are never
+  checked and then reopened by their mutable pathname. Atomic replacements
+  cannot traverse a substituted file symlink, and Markdown is read from one
+  no-follow descriptor after size/type checks.
+
+## Installation transaction
+
+The installer stages and validates runtime, CLI, unit, documentation, and QML
+before stopping the service. Each existing target is moved to a same-filesystem
+backup and no backup is discarded until daemon reload, runtime initialization,
+shell rescan, plugin validation, bar enablement, optional Obsidian setup, and
+restart of a previously active service all succeed. Any late failure removes
+the staged targets in reverse order, restores every backup, reloads systemd and
+the shell, normalizes runtime state, and restarts the old service when needed.
 
 ## State machine
 
@@ -92,3 +110,9 @@ activity.
 - Ephemeral state: `${XDG_RUNTIME_DIR}/goalwatch/state.json`
 
 Nothing under `/usr/share/omarchy` is changed.
+
+The deadline uses Python's documented
+[`signal.setitimer`](https://docs.python.org/3/library/signal.html#signal.setitimer)
+real-time timer. Descriptor paths use the documented
+[`sqlite3.connect(..., uri=True)`](https://docs.python.org/3/library/sqlite3.html#sqlite3.connect)
+URI mode after the Linux file descriptor has been opened and validated.

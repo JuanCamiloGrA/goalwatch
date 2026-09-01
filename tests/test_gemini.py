@@ -1,6 +1,8 @@
 import json
+import signal
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,6 +23,7 @@ class Handler(BaseHTTPRequestHandler):
     paths = []
     redirect_location = ""
     declared_length = None
+    usage_metadata = {"promptTokenCount": 12, "candidatesTokenCount": 4}
 
     def do_POST(self):
         Handler.paths.append(self.path)
@@ -35,7 +38,7 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(
             {
                 "candidates": [{"content": {"parts": [{"text": Handler.response_text}]}}],
-                "usageMetadata": {"promptTokenCount": 12, "candidatesTokenCount": 4},
+                "usageMetadata": Handler.usage_metadata,
             }
         ).encode()
         Handler.last_response_body = body
@@ -72,6 +75,7 @@ class GeminiTests(unittest.TestCase):
         Handler.response_status = 200
         Handler.redirect_location = ""
         Handler.declared_length = None
+        Handler.usage_metadata = {"promptTokenCount": 12, "candidatesTokenCount": 4}
         Handler.paths = []
 
     def test_false_decision_and_usage(self):
@@ -177,6 +181,28 @@ class GeminiTests(unittest.TestCase):
         self.assertEqual(detail["response_bytes"], 0)
 
     @patch("goalwatch.gemini.urllib.request.build_opener")
+    def test_malformed_http_status_fails_open_and_is_audited(self, opener):
+        class InvalidResponse:
+            status = True
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_arguments):
+                return False
+
+        opener.return_value.open.return_value = InvalidResponse()
+        with tempfile.TemporaryDirectory() as directory, AuditStore(
+            Path(directory) / "audit.sqlite3"
+        ) as audit:
+            with self.assertRaises(GeminiError) as raised:
+                self.client().classify(Goal("Ship", "Codex"), b"jpeg", audit=audit)
+            detail = audit.get(audit.query()["records"][0]["id"])
+        self.assertEqual(raised.exception.code, "invalid_response_metadata")
+        self.assertEqual(detail["error_code"], "invalid_response_metadata")
+
+    @patch("goalwatch.gemini.urllib.request.build_opener")
     def test_audit_failure_prevents_the_network_request(self, opener):
         class BrokenAudit:
             def begin(self, **_arguments):
@@ -186,6 +212,74 @@ class GeminiTests(unittest.TestCase):
             self.client().classify(Goal("Ship", "Codex"), b"jpeg", audit=BrokenAudit())
         self.assertEqual(raised.exception.code, "audit_store")
         opener.assert_not_called()
+
+    def test_malformed_usage_metadata_fails_open_and_is_audited(self):
+        invalid_values = (
+            "not-an-object",
+            {"promptTokenCount": "12", "candidatesTokenCount": 4},
+            {"promptTokenCount": True, "candidatesTokenCount": 4},
+            {"promptTokenCount": -1, "candidatesTokenCount": 4},
+            {"promptTokenCount": 1_000_000_001, "candidatesTokenCount": 4},
+        )
+        for value in invalid_values:
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as directory:
+                Handler.usage_metadata = value
+                with AuditStore(Path(directory) / "audit.sqlite3") as audit:
+                    with self.assertRaises(GeminiError) as raised:
+                        self.client().classify(Goal("Ship", "Codex"), b"jpeg", audit=audit)
+                    detail = audit.get(audit.query()["records"][0]["id"])
+                self.assertEqual(raised.exception.code, "invalid_response_metadata")
+                self.assertEqual(detail["outcome"], "error")
+                self.assertEqual(detail["error_code"], "invalid_response_metadata")
+
+    @patch("goalwatch.gemini.urllib.request.build_opener")
+    def test_total_deadline_interrupts_a_slow_body_and_restores_signal_state(self, opener):
+        class SlowResponse:
+            status = 200
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_arguments):
+                return False
+
+            def read(self, _size):
+                time.sleep(1)
+                return b"{}"
+
+        opener.return_value.open.return_value = SlowResponse()
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        started = time.monotonic()
+        with tempfile.TemporaryDirectory() as directory, AuditStore(
+            Path(directory) / "audit.sqlite3"
+        ) as audit:
+            with self.assertRaises(GeminiError) as raised:
+                GeminiClient(
+                    "private-key-value",
+                    "gemini-test",
+                    timeout=0.05,
+                    endpoint=self.endpoint,
+                ).classify(Goal("Ship", "Codex"), b"jpeg", audit=audit)
+            detail = audit.get(audit.query()["records"][0]["id"])
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertEqual(raised.exception.code, "deadline")
+        self.assertEqual(detail["error_code"], "deadline")
+        self.assertEqual(signal.getsignal(signal.SIGALRM), previous_handler)
+
+    @patch("goalwatch.gemini.urllib.request.build_opener")
+    def test_total_deadline_includes_client_setup(self, opener):
+        opener.side_effect = lambda *_arguments: time.sleep(1)
+        started = time.monotonic()
+        with self.assertRaises(GeminiError) as raised:
+            GeminiClient(
+                "private-key-value",
+                "gemini-test",
+                timeout=0.05,
+                endpoint=self.endpoint,
+            ).classify(Goal("Ship", "Codex"), b"jpeg")
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertEqual(raised.exception.code, "deadline")
 
 
 if __name__ == "__main__":

@@ -3,10 +3,13 @@ from __future__ import annotations
 import base64
 import http.client
 import json
+import signal
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from .audit import AuditError, AuditStore
@@ -17,6 +20,7 @@ from .goals import Goal
 DEFAULT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 MAX_COMPLEMENT = 700
 MAX_RESPONSE_BYTES = 512 * 1024
+MAX_USAGE_TOKENS = 1_000_000_000
 
 
 PROMPT = """You are GoalWatch, a conservative screen-activity classifier.
@@ -61,6 +65,46 @@ class _NoRedirects(urllib.request.HTTPRedirectHandler):
         return None
 
 
+class _DeadlineExpired(TimeoutError):
+    pass
+
+
+@contextmanager
+def _hard_deadline(seconds: float):
+    if seconds <= 0:
+        raise _DeadlineExpired("Gemini deadline elapsed.")
+    if threading.current_thread() is not threading.main_thread():
+        raise GeminiError("Gemini requests require the main service thread.", "deadline_setup")
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    if previous_timer[0] > 0:
+        raise GeminiError("A process deadline is already active.", "deadline_setup")
+
+    def expire(_number, _frame) -> None:
+        raise _DeadlineExpired("Gemini deadline elapsed.")
+
+    signal.signal(signal.SIGALRM, expire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
+def _usage_count(metadata: object, key: str) -> int:
+    if metadata is None:
+        return 0
+    if not isinstance(metadata, dict):
+        raise ValueError("usageMetadata must be an object")
+    value = metadata.get(key, 0)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{key} must be an integer")
+    if value < 0 or value > MAX_USAGE_TOKENS:
+        raise ValueError(f"{key} is outside the accepted range")
+    return value
+
+
 def _read_bounded(response, limit: int) -> tuple[bytes, bool]:
     length = response.headers.get("Content-Length")
     try:
@@ -81,6 +125,14 @@ def _response_headers(response) -> dict[str, str]:
     except (AttributeError, TypeError):
         return {}
     return {str(key)[:200]: str(value)[:2000] for key, value in items}
+
+
+def _http_status(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("HTTP status must be an integer")
+    if value < 100 or value > 599:
+        raise ValueError("HTTP status is outside the accepted range")
+    return value
 
 
 @dataclass(frozen=True)
@@ -210,42 +262,69 @@ class GeminiClient:
                 ) from error
 
         started = time.monotonic()
+        deadline = started + self.timeout
         body = b""
         status = 0
         headers: dict[str, str] = {}
+        http_error = 0
         try:
-            opener = urllib.request.build_opener(_NoRedirects())
-            with opener.open(request, timeout=self.timeout) as response:
-                status = int(getattr(response, "status", 200) or 200)
-                headers = _response_headers(response)
-                body, truncated = _read_bounded(response, MAX_RESPONSE_BYTES)
-        except urllib.error.HTTPError as error:
-            status = int(error.code)
-            headers = _response_headers(error)
-            try:
+            with _hard_deadline(deadline - time.monotonic()):
+                opener = urllib.request.build_opener(_NoRedirects())
                 try:
-                    body, truncated = _read_bounded(error, MAX_RESPONSE_BYTES)
-                except (OSError, TimeoutError) as read_error:
-                    latency = round((time.monotonic() - started) * 1000)
-                    finish_audit(
-                        "error",
-                        b"",
-                        http_status=status,
-                        response_headers=headers,
-                        error_code="response_read",
-                        latency_ms=latency,
-                    )
-                    raise GeminiError(
-                        "Gemini returned an unreadable error response.",
-                        "response_read",
-                    ) from read_error
-            finally:
-                error.close()
-            if 300 <= error.code < 400:
+                    with opener.open(request, timeout=self.timeout) as response:
+                        status = _http_status(getattr(response, "status", 200))
+                        headers = _response_headers(response)
+                        body, truncated = _read_bounded(response, MAX_RESPONSE_BYTES)
+                except urllib.error.HTTPError as error:
+                    http_error = _http_status(error.code)
+                    status = http_error
+                    headers = _response_headers(error)
+                    try:
+                        body, truncated = _read_bounded(error, MAX_RESPONSE_BYTES)
+                    finally:
+                        error.close()
+        except _DeadlineExpired as error:
+            latency = round((time.monotonic() - started) * 1000)
+            finish_audit(
+                "error",
+                body,
+                http_status=status,
+                response_headers=headers,
+                error_code="deadline",
+                latency_ms=latency,
+            )
+            raise GeminiError("Gemini exceeded the total request deadline.", "deadline") from error
+        except (ValueError, TypeError) as error:
+            latency = round((time.monotonic() - started) * 1000)
+            finish_audit(
+                "error",
+                body,
+                http_status=status,
+                response_headers=headers,
+                error_code="invalid_response_metadata",
+                latency_ms=latency,
+            )
+            raise GeminiError(
+                "Gemini returned invalid HTTP metadata.",
+                "invalid_response_metadata",
+            ) from error
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            latency = round((time.monotonic() - started) * 1000)
+            finish_audit(
+                "error",
+                body,
+                http_status=status,
+                response_headers=headers,
+                error_code="network",
+                latency_ms=latency,
+            )
+            raise GeminiError("Gemini request failed.", "network") from error
+        latency = round((time.monotonic() - started) * 1000)
+        if http_error:
+            if 300 <= http_error < 400:
                 code = "redirect_rejected"
             else:
-                code = "rate_limited" if error.code == 429 else f"http_{error.code}"
-            latency = round((time.monotonic() - started) * 1000)
+                code = "rate_limited" if http_error == 429 else f"http_{http_error}"
             finish_audit(
                 "error",
                 body,
@@ -255,12 +334,7 @@ class GeminiClient:
                 error_code=code,
                 latency_ms=latency,
             )
-            raise GeminiError("Gemini request was rejected.", code) from error
-        except (urllib.error.URLError, TimeoutError, OSError) as error:
-            latency = round((time.monotonic() - started) * 1000)
-            finish_audit("error", b"", error_code="network", latency_ms=latency)
-            raise GeminiError("Gemini request failed.", "network") from error
-        latency = round((time.monotonic() - started) * 1000)
+            raise GeminiError("Gemini request was rejected.", code)
         if truncated:
             finish_audit(
                 "error",
@@ -304,14 +378,25 @@ class GeminiClient:
             invalid("Gemini explained a non-alert response.")
         if len(complement) > MAX_COMPLEMENT:
             invalid("Gemini returned an excessive alert explanation.")
-        usage = response_data.get("usageMetadata") or {}
-        decision = Decision(
-            alert=parsed["alert"],
-            complement=complement,
-            latency_ms=latency,
-            prompt_tokens=int(usage.get("promptTokenCount") or 0),
-            output_tokens=int(usage.get("candidatesTokenCount") or 0),
-        )
+        try:
+            usage = response_data.get("usageMetadata")
+            prompt_tokens = _usage_count(usage, "promptTokenCount")
+            output_tokens = _usage_count(usage, "candidatesTokenCount")
+            decision = Decision(
+                alert=parsed["alert"],
+                complement=complement,
+                latency_ms=latency,
+                prompt_tokens=prompt_tokens,
+                output_tokens=output_tokens,
+            )
+        except (AttributeError, TypeError, ValueError) as error:
+            try:
+                invalid(
+                    "Gemini returned invalid usage metadata.",
+                    "invalid_response_metadata",
+                )
+            except GeminiError as issue:
+                raise issue from error
         finish_audit(
             "off_goal" if decision.alert else "on_goal",
             body,

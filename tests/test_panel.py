@@ -50,6 +50,8 @@ class PanelReactivityTests(unittest.TestCase):
         self.assertIn("root.selectedAudit.raw_response", self.source)
         self.assertIn('target: "com.goalwatch.audit"', self.source)
         self.assertIn('{"label": "PENDING", "value": "pending"}', self.source)
+        self.assertIn("response.retention_days", self.source)
+        self.assertIn("private 7-day history", self.source)
         self.assertIn('text: "REQUEST AUDIT"', self.source)
 
 

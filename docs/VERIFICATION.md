@@ -1,4 +1,4 @@
-# GoalWatch 0.3.0 verification report
+# GoalWatch 0.3.1 verification report
 
 Verified on 2026-09-01 with Omarchy 4.0.2, Quickshell 0.3.1, and Python 3.14.
 
@@ -6,7 +6,7 @@ Verified on 2026-09-01 with Omarchy 4.0.2, Quickshell 0.3.1, and Python 3.14.
 
 | Check | Result | Budget |
 |---|---:|---:|
-| Executable install size, including both plugins | 193,952 bytes | < 1 MiB |
+| Executable install size, including both plugins | 208,852 bytes | < 1 MiB |
 | Sleeping daemon CPU over 60 seconds | 0.15% | <= 0.5% |
 | Maximum daemon RSS during that sample | 28,184 KiB | <= 30 MiB |
 | Real desktop capture | 145,758 bytes, 1920×1080, 69 ms | <= 1920 px long edge, < 8 MiB |
@@ -21,7 +21,7 @@ process while sleeping.
 
 ## Automated checks
 
-- 72 Python unit/integration tests pass.
+- 87 Python unit/integration tests pass.
 - Node-based Obsidian tests pass for daily-note resolution, canonical goal
   insertion, and `@goal` replacement.
 - Gemini tests use a local HTTP server and cover alert true/false, exact schema,
@@ -31,6 +31,8 @@ process while sleeping.
   original JPEG, private file modes, request-before-network ordering, HTTP and
   network failures, filtering, pagination, clearing, symlink refusal, and
   absence of the API key from every archive file.
+- Audit and metrics quota tests cover age, row, content, database-page, WAL, and
+  cascading screenshot/alert cleanup limits.
 - Goal parsing covers latest-valid selection, malformed tails, default tools,
   CRLF, Unicode, symlinks, invalid UTF-8, path escape, and input bounds.
 - Scheduler tests use a fake monotonic clock for interval reset, a large resume
@@ -40,6 +42,17 @@ process while sleeping.
 - Security regressions cover bounded child output, deadline/process-group
   cleanup, descriptor-relative config/state writes, private-directory symlink
   refusal, and plain-text bounded QML rendering.
+- A forced inode replacement between SQLite descriptor validation and connect
+  is rejected without modifying the substituted target. Both databases connect
+  through the validated descriptor.
+- A deliberately slow response body is interrupted by the monotonic total
+  deadline and restores the prior signal state. Malformed, boolean, negative,
+  oversized, and non-object usage metadata all become audited fail-open errors.
+- A late forced shell-rescan failure proves the installer restores the prior
+  runtime, CLI, unit, documentation, QML plugin, and active-service state before
+  removing backups.
+- The distribution check rejects any `AGENT.md` or `AGENTS.md`; contribution
+  guidance now lives in the inert `CONTRIBUTING.md` document.
 - Shell syntax, JavaScript syntax, JSON manifests, Omarchy plugin validation,
   and systemd unit verification pass.
 - The repository-root marketplace manifest and packaged runtime manifest both
@@ -65,7 +78,11 @@ Run them with:
   immediately, the companion directory and registry entry were removed and
   restored, and all nine unrelated community plugins remained unchanged.
 - Re-running the default installer updated an already-authorized Obsidian
-  companion to 0.3.0 without requiring `--with-obsidian` again.
+  companion to 0.3.1 without requiring `--with-obsidian` again.
+- An update started with the service active completed with the replacement
+  service active; the final acceptance cleanup then returned it to disabled/off.
+- The audit browser reported the enforced 7-day, 2,000-record, and 512 MiB
+  content limits while preserving the existing private archive.
 - The fresh Quickshell process loaded GoalWatch without GoalWatch QML warnings.
 - A literal HTML-like goal and explanation rendered visibly as plain text; no
   markup, image, or local-file interpretation occurred.
@@ -98,7 +115,7 @@ model-quality gate is not recorded as passing. No desktop capture was used and
 the key was never printed.
 
 The reproducible command is `./scripts/ai_benchmark.py`; it reports per-case
-latency, precision, false-alert rate, and upstream errors. From 0.3.0 onward,
+latency, precision, false-alert rate, and upstream errors. Since 0.3.0,
 benchmark requests are retained in the same private audit archive as normal
 checks.
 

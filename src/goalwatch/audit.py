@@ -8,9 +8,11 @@ import os
 import re
 import sqlite3
 import stat
-from datetime import datetime, timezone
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .database import open_bound_sqlite
 from .paths import audit_dir, audit_file
 from .secureio import atomic_write_bytes_at, directory_fd, open_lock_at
 
@@ -19,6 +21,12 @@ IMAGE_NAME = re.compile(r"^request-[0-9]{8}\.jpg$")
 OUTCOMES = {"pending", "on_goal", "off_goal", "error"}
 MAX_QUERY_CHARS = 200
 MAX_PAGE_SIZE = 100
+AUDIT_RETENTION_DAYS = 7
+MAX_AUDIT_ROWS = 2_000
+MAX_AUDIT_CONTENT_BYTES = 512 * 1024 * 1024
+MAX_AUDIT_RESPONSE_BYTES = 224 * 1024 * 1024
+MAX_AUDIT_DB_BYTES = 256 * 1024 * 1024
+MAX_AUDIT_WAL_BYTES = 8 * 1024 * 1024
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -69,33 +77,42 @@ class AuditStore:
         self._directory = directory_fd(self.directory_path, create=True, private=True)
         self._directory_fd = self._directory.__enter__()
         self._lock_fd = -1
+        self._write_lock_fd = -1
+        self._database_fd = -1
         try:
             self._lock_fd = open_lock_at(self._directory_fd, ".audit.lock")
             fcntl.flock(self._lock_fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
-            for name in (self.path.name, f"{self.path.name}-wal", f"{self.path.name}-shm"):
+            self._write_lock_fd = open_lock_at(self._directory_fd, ".audit.write.lock")
+            for name in (f"{self.path.name}-wal", f"{self.path.name}-shm"):
                 try:
                     info = os.stat(name, dir_fd=self._directory_fd, follow_symlinks=False)
                 except FileNotFoundError:
                     continue
-                if not stat.S_ISREG(info.st_mode):
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
                     raise AuditError(f"Refusing unsafe audit path: {name}")
-            descriptor_path = f"/proc/self/fd/{self._directory_fd}/{self.path.name}"
-            self.connection = sqlite3.connect(descriptor_path, timeout=5)
+            try:
+                self.connection, self._database_fd = open_bound_sqlite(
+                    self._directory_fd,
+                    self.path.name,
+                    timeout=5,
+                )
+            except OSError as error:
+                raise AuditError(f"Refusing unsafe audit path: {self.path.name}") from error
             self.connection.row_factory = sqlite3.Row
+            self._configure_size_limits()
             self.connection.executescript(SCHEMA)
             self.connection.commit()
-            os.chmod(
-                self.path.name,
-                0o600,
-                dir_fd=self._directory_fd,
-                follow_symlinks=False,
-            )
-            if exclusive:
+            with self._write_lock():
                 self._remove_orphan_images()
+                self._prune_locked()
         except Exception as error:
             connection = getattr(self, "connection", None)
             if connection is not None:
                 connection.close()
+            if self._database_fd >= 0:
+                os.close(self._database_fd)
+            if self._write_lock_fd >= 0:
+                os.close(self._write_lock_fd)
             if self._lock_fd >= 0:
                 os.close(self._lock_fd)
             self._directory.__exit__(None, None, None)
@@ -107,6 +124,8 @@ class AuditStore:
         if self._closed:
             return
         self.connection.close()
+        os.close(self._database_fd)
+        os.close(self._write_lock_fd)
         os.close(self._lock_fd)
         self._directory.__exit__(None, None, None)
         self._closed = True
@@ -116,6 +135,113 @@ class AuditStore:
 
     def __exit__(self, _type, _value, _traceback) -> None:
         self.close()
+
+    def _configure_size_limits(self) -> None:
+        page_size = int(self.connection.execute("PRAGMA page_size").fetchone()[0])
+        max_pages = max(1, MAX_AUDIT_DB_BYTES // page_size)
+        self.connection.execute(f"PRAGMA max_page_count={max_pages}")
+        self.connection.execute("PRAGMA wal_autocheckpoint=500")
+        self.connection.execute(f"PRAGMA journal_size_limit={MAX_AUDIT_WAL_BYTES}")
+        if os.fstat(self._database_fd).st_size > MAX_AUDIT_DB_BYTES:
+            raise AuditError("Audit database exceeds its size quota.")
+
+    @contextmanager
+    def _write_lock(self):
+        fcntl.flock(self._write_lock_fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(self._write_lock_fd, fcntl.LOCK_UN)
+
+    def _delete_rows(self, rows: list[sqlite3.Row]) -> None:
+        if not rows:
+            return
+        identifiers = [int(row["id"]) for row in rows]
+        for offset in range(0, len(identifiers), 500):
+            chunk = identifiers[offset:offset + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            self.connection.execute(
+                f"DELETE FROM requests WHERE id IN ({placeholders})",
+                chunk,
+            )
+        self.connection.commit()
+        for row in rows:
+            name = str(row["image_file"] or "")
+            if not IMAGE_NAME.fullmatch(name):
+                continue
+            try:
+                os.unlink(name, dir_fd=self._directory_fd)
+            except FileNotFoundError:
+                pass
+
+    def _prune_locked(
+        self,
+        *,
+        incoming_content_bytes: int = 0,
+        incoming_response_bytes: int = 0,
+        additional_rows: int = 0,
+        protected_id: int = 0,
+    ) -> int:
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=AUDIT_RETENTION_DAYS)
+        ).isoformat(timespec="seconds")
+        expired = self.connection.execute(
+            """
+            SELECT id, image_file, image_bytes, response_bytes FROM requests
+            WHERE requested_at < ? AND id != ? ORDER BY id
+            """,
+            (cutoff, int(protected_id)),
+        ).fetchall()
+        self._delete_rows(list(expired))
+
+        rows = self.connection.execute(
+            """
+            SELECT id, image_file, image_bytes, response_bytes FROM requests
+            WHERE id != ? ORDER BY id
+            """,
+            (int(protected_id),),
+        ).fetchall()
+        protected = self.connection.execute(
+            "SELECT image_bytes, response_bytes FROM requests WHERE id=?",
+            (int(protected_id),),
+        ).fetchone() if protected_id else None
+        protected_content = (
+            int(protected["image_bytes"]) + int(protected["response_bytes"])
+            if protected is not None else 0
+        )
+        protected_response = int(protected["response_bytes"]) if protected is not None else 0
+        total_content = protected_content + sum(
+            int(row["image_bytes"]) + int(row["response_bytes"]) for row in rows
+        )
+        total_response = protected_response + sum(int(row["response_bytes"]) for row in rows)
+        total_rows = len(rows) + (1 if protected is not None else 0)
+        remove: list[sqlite3.Row] = []
+        for row in rows:
+            over_rows = total_rows + additional_rows > MAX_AUDIT_ROWS
+            over_content = (
+                total_content + incoming_content_bytes > MAX_AUDIT_CONTENT_BYTES
+            )
+            over_responses = (
+                total_response + incoming_response_bytes > MAX_AUDIT_RESPONSE_BYTES
+            )
+            if not (over_rows or over_content or over_responses):
+                break
+            remove.append(row)
+            total_rows -= 1
+            total_content -= int(row["image_bytes"]) + int(row["response_bytes"])
+            total_response -= int(row["response_bytes"])
+        self._delete_rows(remove)
+        if (
+            total_rows + additional_rows > MAX_AUDIT_ROWS
+            or total_content + incoming_content_bytes > MAX_AUDIT_CONTENT_BYTES
+            or total_response + incoming_response_bytes > MAX_AUDIT_RESPONSE_BYTES
+        ):
+            raise AuditError("The request exceeds the audit archive quota.")
+        return len(expired) + len(remove)
+
+    def prune(self) -> int:
+        with self._write_lock():
+            return self._prune_locked()
 
     def _remove_orphan_images(self) -> None:
         referenced = {
@@ -141,44 +267,51 @@ class AuditStore:
         image: bytes,
     ) -> int:
         image_name = ""
-        try:
-            image_digest = hashlib.sha256(image).hexdigest()
-            cursor = self.connection.execute(
-                """
-                INSERT INTO requests(
-                  requested_at, model, endpoint, goal, tools, request_json,
-                  image_file, image_bytes, image_sha256, outcome
-                ) VALUES(?,?,?,?,?,?,?,?,?, 'pending')
-                """,
-                (
-                    utc_now(), model, endpoint, goal, tools, "", "",
-                    len(image), image_digest,
-                ),
-            )
-            record_id = int(cursor.lastrowid)
-            image_name = f"request-{record_id:08d}.jpg"
-            document = dict(request)
-            document["screenshot"] = {
-                "file": image_name,
-                "mimeType": "image/jpeg",
-                "bytes": len(image),
-                "sha256": image_digest,
-                "note": "The exact image bytes are stored in the adjacent audit file.",
-            }
-            atomic_write_bytes_at(self._directory_fd, image_name, image)
-            cursor = self.connection.execute(
-                "UPDATE requests SET request_json=?, image_file=? WHERE id=?",
-                (json.dumps(document, ensure_ascii=False, indent=2), image_name, record_id),
-            )
-            self.connection.commit()
-        except Exception as error:
-            self.connection.rollback()
-            if image_name:
-                try:
-                    os.unlink(image_name, dir_fd=self._directory_fd)
-                except FileNotFoundError:
-                    pass
-            raise AuditError("Could not persist the request audit record.") from error
+        with self._write_lock():
+            try:
+                self._prune_locked(
+                    incoming_content_bytes=len(image),
+                    additional_rows=1,
+                )
+                image_digest = hashlib.sha256(image).hexdigest()
+                cursor = self.connection.execute(
+                    """
+                    INSERT INTO requests(
+                      requested_at, model, endpoint, goal, tools, request_json,
+                      image_file, image_bytes, image_sha256, outcome
+                    ) VALUES(?,?,?,?,?,?,?,?,?, 'pending')
+                    """,
+                    (
+                        utc_now(), model, endpoint, goal, tools, "", "",
+                        len(image), image_digest,
+                    ),
+                )
+                record_id = int(cursor.lastrowid)
+                image_name = f"request-{record_id:08d}.jpg"
+                document = dict(request)
+                document["screenshot"] = {
+                    "file": image_name,
+                    "mimeType": "image/jpeg",
+                    "bytes": len(image),
+                    "sha256": image_digest,
+                    "note": "The exact image bytes are stored in the adjacent audit file.",
+                }
+                atomic_write_bytes_at(self._directory_fd, image_name, image)
+                self.connection.execute(
+                    "UPDATE requests SET request_json=?, image_file=? WHERE id=?",
+                    (json.dumps(document, ensure_ascii=False, indent=2), image_name, record_id),
+                )
+                self.connection.commit()
+            except Exception as error:
+                self.connection.rollback()
+                if image_name:
+                    try:
+                        os.unlink(image_name, dir_fd=self._directory_fd)
+                    except FileNotFoundError:
+                        pass
+                if isinstance(error, AuditError):
+                    raise
+                raise AuditError("Could not persist the request audit record.") from error
         return record_id
 
     def finish(
@@ -197,40 +330,53 @@ class AuditStore:
     ) -> None:
         if outcome not in OUTCOMES - {"pending"}:
             raise AuditError("Invalid audit outcome.")
-        try:
-            cursor = self.connection.execute(
-                """
-                UPDATE requests SET
-                  completed_at=?, http_status=?, response_headers_json=?,
-                  response_body=?, response_bytes=?, response_sha256=?,
-                  response_truncated=?, outcome=?, error_code=?, latency_ms=?,
-                  prompt_tokens=?, output_tokens=?
-                WHERE id=?
-                """,
-                (
-                    utc_now(),
-                    max(0, int(http_status)),
-                    json.dumps(response_headers or {}, ensure_ascii=False, sort_keys=True),
-                    sqlite3.Binary(raw_response),
-                    len(raw_response),
-                    hashlib.sha256(raw_response).hexdigest() if raw_response else "",
-                    bool(response_truncated),
-                    outcome,
-                    str(error_code or ""),
-                    max(0, int(latency_ms)),
-                    max(0, int(prompt_tokens)),
-                    max(0, int(output_tokens)),
-                    int(record_id),
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise AuditError("Audit record was not found.")
-            self.connection.commit()
-        except (OSError, sqlite3.Error, AuditError) as error:
-            self.connection.rollback()
-            if isinstance(error, AuditError):
-                raise
-            raise AuditError("Could not persist the model response audit record.") from error
+        with self._write_lock():
+            try:
+                current = self.connection.execute(
+                    "SELECT response_bytes FROM requests WHERE id=?",
+                    (int(record_id),),
+                ).fetchone()
+                if current is None:
+                    raise AuditError("Audit record was not found.")
+                previous_response = int(current["response_bytes"])
+                self._prune_locked(
+                    incoming_content_bytes=len(raw_response) - previous_response,
+                    incoming_response_bytes=len(raw_response) - previous_response,
+                    protected_id=record_id,
+                )
+                cursor = self.connection.execute(
+                    """
+                    UPDATE requests SET
+                      completed_at=?, http_status=?, response_headers_json=?,
+                      response_body=?, response_bytes=?, response_sha256=?,
+                      response_truncated=?, outcome=?, error_code=?, latency_ms=?,
+                      prompt_tokens=?, output_tokens=?
+                    WHERE id=?
+                    """,
+                    (
+                        utc_now(),
+                        max(0, int(http_status)),
+                        json.dumps(response_headers or {}, ensure_ascii=False, sort_keys=True),
+                        sqlite3.Binary(raw_response),
+                        len(raw_response),
+                        hashlib.sha256(raw_response).hexdigest() if raw_response else "",
+                        bool(response_truncated),
+                        outcome,
+                        str(error_code or ""),
+                        max(0, int(latency_ms)),
+                        max(0, int(prompt_tokens)),
+                        max(0, int(output_tokens)),
+                        int(record_id),
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise AuditError("Audit record was not found.")
+                self.connection.commit()
+            except (OSError, sqlite3.Error, AuditError) as error:
+                self.connection.rollback()
+                if isinstance(error, AuditError):
+                    raise
+                raise AuditError("Could not persist the model response audit record.") from error
 
     def query(
         self,
@@ -240,6 +386,7 @@ class AuditStore:
         limit: int = 50,
         offset: int = 0,
     ) -> dict:
+        self.prune()
         if outcome != "all" and outcome not in OUTCOMES:
             raise AuditError("Unknown audit outcome filter.")
         clean_query = str(query or "").strip()[:MAX_QUERY_CHARS]
@@ -277,6 +424,9 @@ class AuditStore:
             "total": total,
             "limit": page_size,
             "offset": page_offset,
+            "retention_days": AUDIT_RETENTION_DAYS,
+            "max_records": MAX_AUDIT_ROWS,
+            "max_content_bytes": MAX_AUDIT_CONTENT_BYTES,
             "records": [dict(row) for row in rows],
         }
 

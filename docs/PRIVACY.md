@@ -36,9 +36,13 @@ record.
 
 The archive is `${XDG_STATE_HOME:-~/.local/state}/goalwatch/audit/`. Its
 directory is mode `0700`; its SQLite database and JPEGs are mode `0600`.
-Screenshots are stored once, next to the database. Records have no automatic
-expiry: use **Request Audit → Clear All** while GoalWatch is stopped, or
-`uninstall.sh --purge`, to remove them. Ordinary uninstall preserves them.
+Screenshots are stored once, next to the database. The oldest records
+and screenshots are removed when any limit is reached: 7 days, 2,000 records,
+or 512 MiB of indexed screenshot/response content. The SQLite database is
+limited to 256 MiB, stored response bodies to 224 MiB, and its WAL to 8 MiB.
+Use **Request Audit → Clear All** while
+GoalWatch is stopped, or `uninstall.sh --purge`, to remove the retained data.
+Ordinary uninstall preserves it.
 
 This is operating-system permission protection, not application-level
 encryption. The local account and root can read the archive. Anyone backing up
@@ -65,11 +69,14 @@ the per-user runtime directory with mode `0600`.
 The Gemini API key is stored through the desktop Secret Service. Non-secret
 settings are saved in a mode-`0600` JSON file. The separate metrics SQLite
 database stores only timestamps, outcomes, model name, latency, token/byte
-counts, error codes, and a SHA-256 fingerprint of the goal; it is pruned after
-90 days. Private application directories are opened with `O_NOFOLLOW`; config,
-runtime-state, metrics, and audit access are descriptor-anchored. Markdown is
-read from a single no-follow file descriptor, preventing a path swap between
-its type/size checks and content read.
+counts, error codes, and a SHA-256 fingerprint of the goal. It is limited to 90
+days, 30,000 checks, 5,000 sessions, a 16 MiB main database, and a 4 MiB WAL.
+Private application directories are opened with `O_NOFOLLOW`; config and
+runtime-state operations are descriptor-relative. Metrics and audit databases
+are opened with `O_NOFOLLOW`, validated by inode, and handed to SQLite through
+the already-open `/proc/self/fd` descriptor so a pathname replacement cannot
+redirect the connection. Markdown uses the same check-and-use descriptor
+principle.
 
 ## Safety behavior
 
@@ -79,6 +86,11 @@ its type/size checks and content read.
   hard stdout/stderr limits, total deadlines, and process-group cleanup.
 - Gemini response bodies are capped at 512 KiB. Redirects are rejected, so the
   API-key header is never replayed to a redirect target.
+- A deadline computed from the monotonic clock and enforced with a real-time
+  process timer bounds client setup, DNS, connect, TLS, response headers, and
+  body reads as one 30-second operation. Timeout state is restored afterward.
+- Provider-controlled HTTP status, response shape, and usage-token metadata are
+  type- and range-validated inside the fail-open error boundary.
 - If the request and screenshot cannot be durably added to the audit archive,
   the Gemini request is not sent. If the response cannot be attached, no alert
   is allowed.
@@ -93,7 +105,8 @@ its type/size checks and content read.
 
 Stop GoalWatch at any time from the eye button or with `goalwatch stop`. While it
 is off, it performs no capture and makes no Gemini request. Existing audit
-records remain readable until explicitly cleared.
+records remain readable until they reach a documented quota or are explicitly
+cleared.
 
 Obsidian is not required and is never modified by a default installation.
 Turning on Obsidian Sync explicitly installs the companion into one local vault

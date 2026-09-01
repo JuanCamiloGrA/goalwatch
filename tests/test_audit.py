@@ -2,9 +2,16 @@ import base64
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
-from goalwatch.audit import AuditError, AuditStore
+from goalwatch.audit import (
+    MAX_AUDIT_DB_BYTES,
+    MAX_AUDIT_WAL_BYTES,
+    AuditError,
+    AuditStore,
+)
 
 
 class AuditStoreTests(unittest.TestCase):
@@ -90,6 +97,66 @@ class AuditStoreTests(unittest.TestCase):
         with AuditStore(self.database) as store:
             with self.assertRaisesRegex(AuditError, "not found"):
                 store.finish(999, outcome="error", raw_response=b"")
+
+    def test_row_quota_evicts_the_oldest_request_and_its_capture(self):
+        with patch("goalwatch.audit.MAX_AUDIT_ROWS", 2), AuditStore(self.database) as store:
+            first = self.begin(store, "First")
+            store.finish(first, outcome="on_goal", raw_response=b"one")
+            first_image = Path(store.get(first)["image_path"])
+            second = self.begin(store, "Second")
+            store.finish(second, outcome="on_goal", raw_response=b"two")
+            third = self.begin(store, "Third")
+            store.finish(third, outcome="on_goal", raw_response=b"three")
+            page = store.query()
+        self.assertEqual([row["id"] for row in page["records"]], [third, second])
+        self.assertFalse(first_image.exists())
+
+    def test_retention_prunes_expired_request_and_capture(self):
+        with AuditStore(self.database) as store:
+            record_id = self.begin(store)
+            store.finish(record_id, outcome="on_goal", raw_response=b"ok")
+            image = Path(store.get(record_id)["image_path"])
+            expired = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat(
+                timespec="seconds"
+            )
+            store.connection.execute(
+                "UPDATE requests SET requested_at=? WHERE id=?",
+                (expired, record_id),
+            )
+            store.connection.commit()
+            self.assertEqual(store.prune(), 1)
+            self.assertEqual(store.query()["total"], 0)
+        self.assertFalse(image.exists())
+
+    def test_content_quota_is_enforced_before_the_next_request(self):
+        image_size = len(b"\xff\xd8private-screen\xff\xd9")
+        with patch("goalwatch.audit.MAX_AUDIT_CONTENT_BYTES", image_size * 2):
+            with AuditStore(self.database) as store:
+                first = self.begin(store, "First")
+                second = self.begin(store, "Second")
+                third = self.begin(store, "Third")
+                page = store.query()
+        self.assertEqual([row["id"] for row in page["records"]], [third, second])
+        self.assertNotIn(first, [row["id"] for row in page["records"]])
+
+    def test_query_exposes_the_retention_policy(self):
+        with AuditStore(self.database) as store:
+            page = store.query()
+        self.assertEqual(page["retention_days"], 7)
+        self.assertEqual(page["max_records"], 2_000)
+        self.assertEqual(page["max_content_bytes"], 512 * 1024 * 1024)
+
+    def test_database_and_wal_have_hard_page_limits(self):
+        with AuditStore(self.database) as store:
+            page_size = int(store.connection.execute("PRAGMA page_size").fetchone()[0])
+            max_pages = int(
+                store.connection.execute("PRAGMA max_page_count").fetchone()[0]
+            )
+            journal_limit = int(
+                store.connection.execute("PRAGMA journal_size_limit").fetchone()[0]
+            )
+        self.assertLessEqual(page_size * max_pages, MAX_AUDIT_DB_BYTES)
+        self.assertEqual(journal_limit, MAX_AUDIT_WAL_BYTES)
 
 
 if __name__ == "__main__":

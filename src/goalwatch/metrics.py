@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import os
 import sqlite3
 import statistics
@@ -7,8 +8,16 @@ import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .database import open_bound_sqlite
 from .paths import metrics_file
-from .secureio import directory_fd
+from .secureio import directory_fd, open_lock_at
+
+
+METRICS_RETENTION_DAYS = 90
+MAX_CHECK_ROWS = 30_000
+MAX_SESSION_ROWS = 5_000
+MAX_METRICS_DB_BYTES = 16 * 1024 * 1024
+MAX_METRICS_WAL_BYTES = 4 * 1024 * 1024
 
 
 SCHEMA = """
@@ -51,41 +60,89 @@ def utc_now() -> str:
 class Metrics:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or metrics_file()
+        self._closed = False
         self._directory = directory_fd(self.path.parent, create=True, private=True)
         self._directory_fd = self._directory.__enter__()
+        self._lock_fd = -1
+        self._database_fd = -1
         try:
-            for name in (self.path.name, f"{self.path.name}-wal", f"{self.path.name}-shm"):
+            self._lock_fd = open_lock_at(self._directory_fd, ".metrics.lock")
+            fcntl.flock(self._lock_fd, fcntl.LOCK_SH)
+            for name in (f"{self.path.name}-wal", f"{self.path.name}-shm"):
                 try:
                     info = os.stat(name, dir_fd=self._directory_fd, follow_symlinks=False)
                 except FileNotFoundError:
                     continue
-                if not stat.S_ISREG(info.st_mode):
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
                     raise OSError(f"Refusing unsafe metrics path: {name}")
-            descriptor_path = f"/proc/self/fd/{self._directory_fd}/{self.path.name}"
-            self.connection = sqlite3.connect(descriptor_path, timeout=5)
+            try:
+                self.connection, self._database_fd = open_bound_sqlite(
+                    self._directory_fd,
+                    self.path.name,
+                    timeout=5,
+                )
+            except OSError as error:
+                raise OSError(f"Refusing unsafe metrics path: {self.path.name}") from error
         except BaseException:
+            if self._lock_fd >= 0:
+                os.close(self._lock_fd)
             self._directory.__exit__(None, None, None)
             raise
         try:
             self.connection.row_factory = sqlite3.Row
+            self._configure_size_limits()
             self.connection.executescript(SCHEMA)
+            self.prune(METRICS_RETENTION_DAYS)
             self.connection.commit()
-            os.chmod(
-                self.path.name,
-                0o600,
-                dir_fd=self._directory_fd,
-                follow_symlinks=False,
-            )
         except BaseException:
             self.connection.close()
+            os.close(self._database_fd)
+            os.close(self._lock_fd)
             self._directory.__exit__(None, None, None)
             raise
 
     def close(self) -> None:
+        if self._closed:
+            return
         self.connection.close()
+        os.close(self._database_fd)
+        os.close(self._lock_fd)
         self._directory.__exit__(None, None, None)
+        self._closed = True
+
+    def _configure_size_limits(self) -> None:
+        page_size = int(self.connection.execute("PRAGMA page_size").fetchone()[0])
+        max_pages = max(1, MAX_METRICS_DB_BYTES // page_size)
+        self.connection.execute(f"PRAGMA max_page_count={max_pages}")
+        self.connection.execute("PRAGMA wal_autocheckpoint=250")
+        self.connection.execute(f"PRAGMA journal_size_limit={MAX_METRICS_WAL_BYTES}")
+        if os.fstat(self._database_fd).st_size > MAX_METRICS_DB_BYTES:
+            raise OSError("Metrics database exceeds its size quota.")
+
+    def _trim_rows(self, *, check_limit: int, session_limit: int, protected_session: int = 0) -> None:
+        self.connection.execute(
+            """
+            DELETE FROM checks WHERE id IN (
+              SELECT id FROM checks ORDER BY id DESC LIMIT -1 OFFSET ?
+            )
+            """,
+            (max(0, check_limit),),
+        )
+        self.connection.execute(
+            """
+            DELETE FROM sessions WHERE id IN (
+              SELECT id FROM sessions WHERE id != ?
+              ORDER BY id DESC LIMIT -1 OFFSET ?
+            )
+            """,
+            (int(protected_session), max(0, session_limit)),
+        )
 
     def start_session(self) -> int:
+        self._trim_rows(
+            check_limit=MAX_CHECK_ROWS,
+            session_limit=MAX_SESSION_ROWS - 1,
+        )
         cursor = self.connection.execute(
             "INSERT INTO sessions(started_at) VALUES(?)", (utc_now(),)
         )
@@ -112,6 +169,11 @@ class Metrics:
         goal_hash: str = "",
         error_code: str = "",
     ) -> int:
+        self._trim_rows(
+            check_limit=MAX_CHECK_ROWS - 1,
+            session_limit=MAX_SESSION_ROWS - 1,
+            protected_session=session_id,
+        )
         cursor = self.connection.execute(
             """
             INSERT INTO checks(
@@ -154,11 +216,15 @@ class Metrics:
         )
         self.connection.commit()
 
-    def prune(self, days: int = 90) -> None:
+    def prune(self, days: int = METRICS_RETENTION_DAYS) -> None:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
         self.connection.execute("DELETE FROM checks WHERE occurred_at < ?", (cutoff,))
         self.connection.execute(
             "DELETE FROM sessions WHERE stopped_at IS NOT NULL AND stopped_at < ?", (cutoff,)
+        )
+        self._trim_rows(
+            check_limit=MAX_CHECK_ROWS,
+            session_limit=MAX_SESSION_ROWS,
         )
         self.connection.commit()
 
@@ -242,10 +308,15 @@ def reset_metrics(path: Path | None = None) -> None:
     target = path or metrics_file()
     try:
         with directory_fd(target.parent, create=False, private=True) as directory:
-            for name in (target.name, f"{target.name}-wal", f"{target.name}-shm"):
-                try:
-                    os.unlink(name, dir_fd=directory)
-                except FileNotFoundError:
-                    pass
+            lock = open_lock_at(directory, ".metrics.lock")
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                for name in (target.name, f"{target.name}-wal", f"{target.name}-shm"):
+                    try:
+                        os.unlink(name, dir_fd=directory)
+                    except FileNotFoundError:
+                        pass
+            finally:
+                os.close(lock)
     except FileNotFoundError:
         pass

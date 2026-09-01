@@ -2,8 +2,9 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
-from goalwatch.metrics import Metrics
+from goalwatch.metrics import MAX_METRICS_DB_BYTES, MAX_METRICS_WAL_BYTES, Metrics
 
 
 class MetricsTests(unittest.TestCase):
@@ -48,6 +49,39 @@ class MetricsTests(unittest.TestCase):
             self.assertEqual(metrics.connection.execute("SELECT count(*) FROM checks").fetchone()[0], 0)
             self.assertEqual(metrics.connection.execute("SELECT count(*) FROM alerts").fetchone()[0], 0)
             metrics.close()
+
+    def test_check_row_quota_keeps_only_the_newest_rows(self):
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "goalwatch.metrics.MAX_CHECK_ROWS", 2
+        ):
+            metrics = Metrics(Path(directory) / "metrics.sqlite3")
+            session = metrics.start_session()
+            first = metrics.record_check(session, "off_goal", "test")
+            metrics.create_alert(first)
+            metrics.record_check(session, "on_goal", "test")
+            metrics.record_check(session, "on_goal", "test")
+            checks = metrics.connection.execute(
+                "SELECT id FROM checks ORDER BY id"
+            ).fetchall()
+            alerts = metrics.connection.execute("SELECT count(*) FROM alerts").fetchone()[0]
+            metrics.close()
+        self.assertEqual(len(checks), 2)
+        self.assertNotIn(first, [row[0] for row in checks])
+        self.assertEqual(alerts, 0)
+
+    def test_database_and_wal_have_hard_page_limits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            metrics = Metrics(Path(directory) / "metrics.sqlite3")
+            page_size = int(metrics.connection.execute("PRAGMA page_size").fetchone()[0])
+            max_pages = int(
+                metrics.connection.execute("PRAGMA max_page_count").fetchone()[0]
+            )
+            journal_limit = int(
+                metrics.connection.execute("PRAGMA journal_size_limit").fetchone()[0]
+            )
+            metrics.close()
+        self.assertLessEqual(page_size * max_pages, MAX_METRICS_DB_BYTES)
+        self.assertEqual(journal_limit, MAX_METRICS_WAL_BYTES)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from goalwatch.daemon import GoalWatchDaemon
-from goalwatch.gemini import Decision
+from goalwatch.gemini import Decision, GeminiError
 from goalwatch.goals import Goal
 
 
@@ -68,3 +68,17 @@ class DaemonDecisionTests(unittest.TestCase):
         self.daemon._acknowledge()
         self.assertFalse(self.daemon.alert_active)
         self.assertFalse(self.daemon.state["alert"]["active"])
+
+    @patch("goalwatch.daemon.capture_desktop", return_value=b"jpeg")
+    @patch("goalwatch.daemon.GeminiClient")
+    def test_invalid_provider_metadata_cannot_terminate_or_alert(self, client, _capture):
+        client.return_value.classify.side_effect = GeminiError(
+            "Gemini returned invalid usage metadata.",
+            "invalid_response_metadata",
+        )
+        self.daemon._perform_check(
+            {"model": "gemini-test"}, Goal("Ship release", "Codex"), "private-key"
+        )
+        self.assertFalse(self.daemon.alert_active)
+        self.assertEqual(self.daemon.state["state"], "WATCHING")
+        self.assertEqual(self.daemon.state["last_outcome"], "error")

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "com.goalwatch",
   "name": "GoalWatch",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "author": "Juan Camilo Grisales Arias",
   "license": "MIT",
   "description": "A silent, screen-aware focus guard for Omarchy with optional Obsidian sync.",

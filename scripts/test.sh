@@ -15,6 +15,11 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$goalwatch_root/src" python3 -m unittest d
 node --check integrations/obsidian/goalwatch/main.js
 node tests/test_obsidian.js
 bash -n install.sh uninstall.sh packaging/bin/goalwatch scripts/test.sh
+if find . -path ./.git -prune -o -type f \( -name 'AGENT.md' -o -name 'AGENTS.md' \) -print -quit | grep -q .; then
+  echo "Automatic coding-agent instruction files must not ship in GoalWatch." >&2
+  exit 1
+fi
+test -f CONTRIBUTING.md
 python3 -m json.tool manifest.json >/dev/null
 python3 -m json.tool integrations/omarchy/com.goalwatch/manifest.json >/dev/null
 python3 -m json.tool integrations/obsidian/goalwatch/manifest.json >/dev/null

@@ -15,7 +15,6 @@ goalwatch_skip_obsidian=false
 goalwatch_obsidian_explicit=false
 goalwatch_skip_packages=false
 goalwatch_vault_args=()
-goalwatch_obsidian_failed=false
 goalwatch_obsidian_ready=false
 
 usage() {
@@ -76,6 +75,10 @@ command -v systemctl >/dev/null 2>&1 || {
   echo "GoalWatch requires systemd user services." >&2
   exit 1
 }
+command -v flock >/dev/null 2>&1 || {
+  echo "GoalWatch requires util-linux flock." >&2
+  exit 1
+}
 
 goalwatch_missing_packages=()
 command -v python3 >/dev/null 2>&1 || goalwatch_missing_packages+=(python)
@@ -98,63 +101,180 @@ for command_name in python3 grim secret-tool; do
   }
 done
 
+install -d -m 700 "$goalwatch_app_parent"
+exec 9<"$goalwatch_app_parent"
+flock -n 9 || {
+  echo "Another GoalWatch installation is already running." >&2
+  exit 1
+}
+install -d -m 755 \
+  "$HOME/.local/bin" \
+  "$goalwatch_config_home/systemd/user" \
+  "$goalwatch_config_home/omarchy/plugins" \
+  "$(dirname -- "$goalwatch_doc")"
+
 goalwatch_was_active=false
+goalwatch_transaction_started=false
+goalwatch_committed=false
+goalwatch_widget_added=false
+goalwatch_manage_plugin=true
+goalwatch_stages=()
+goalwatch_targets=()
+goalwatch_backups=()
+goalwatch_had_old=()
+
+if [[ $(realpath -m "$goalwatch_root") == $(realpath -m "$goalwatch_plugin") ]]; then
+  goalwatch_manage_plugin=false
+fi
+
+path_exists() {
+  [[ -e $1 || -L $1 ]]
+}
+
+remove_exact_path() {
+  local target="$1"
+  [[ -n $target && $target != / && $target != "$HOME" ]] || {
+    echo "Refusing unsafe transaction cleanup target: $target" >&2
+    return 1
+  }
+  if [[ -d $target && ! -L $target ]]; then
+    rm -rf -- "$target"
+  else
+    rm -f -- "$target"
+  fi
+}
+
+swap_target() {
+  local target="$1"
+  local staged="$2"
+  local backup="${target}.goalwatch-previous.$$"
+  local had_old=false
+  if path_exists "$backup"; then
+    echo "Refusing to overwrite transaction backup: $backup" >&2
+    return 1
+  fi
+  if path_exists "$target"; then
+    had_old=true
+    mv -- "$target" "$backup"
+  fi
+  goalwatch_targets+=("$target")
+  goalwatch_backups+=("$backup")
+  goalwatch_had_old+=("$had_old")
+  mv -- "$staged" "$target"
+}
+
+cleanup_stages() {
+  local path
+  for path in "${goalwatch_stages[@]}"; do
+    path_exists "$path" && remove_exact_path "$path"
+  done
+}
+
+discard_backups() {
+  local path
+  for path in "${goalwatch_backups[@]}"; do
+    path_exists "$path" && remove_exact_path "$path"
+  done
+}
+
+rollback_install() {
+  local index target backup had_old
+  if systemctl --user is-active --quiet goalwatch.service 2>/dev/null; then
+    systemctl --user stop goalwatch.service >/dev/null 2>&1 || true
+  fi
+  if [[ $goalwatch_widget_added == true ]]; then
+    omarchy-shell shell setPluginEnabled com.goalwatch false >/dev/null 2>&1 || true
+  fi
+  for (( index=${#goalwatch_targets[@]}-1; index>=0; index-- )); do
+    target="${goalwatch_targets[$index]}"
+    backup="${goalwatch_backups[$index]}"
+    had_old="${goalwatch_had_old[$index]}"
+    path_exists "$target" && remove_exact_path "$target"
+    if [[ $had_old == true ]] && path_exists "$backup"; then
+      mv -- "$backup" "$target"
+    fi
+  done
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
+  if [[ -x $goalwatch_bin ]]; then
+    "$goalwatch_bin" state-off >/dev/null 2>&1 || true
+  fi
+  omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
+}
+
+finish_install() {
+  local status=$?
+  trap - EXIT INT TERM HUP
+  set +e
+  if [[ $status -ne 0 && $goalwatch_transaction_started == true && $goalwatch_committed == false ]]; then
+    echo "Installation failed; restoring the previous GoalWatch state." >&2
+    rollback_install
+  fi
+  cleanup_stages
+  if [[ $goalwatch_committed == true ]]; then
+    discard_backups
+  fi
+  if [[ $goalwatch_was_active == true ]] && ! systemctl --user is-active --quiet goalwatch.service 2>/dev/null; then
+    if ! systemctl --user start goalwatch.service; then
+      echo "Could not restore the previously active GoalWatch service." >&2
+      status=1
+    fi
+  fi
+  exit "$status"
+}
+
+trap finish_install EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+
+goalwatch_app_stage="$(mktemp -d "$goalwatch_app_parent/.install.XXXXXX")"
+goalwatch_stages+=("$goalwatch_app_stage")
+cp -a "$goalwatch_root/src/goalwatch" "$goalwatch_app_stage/goalwatch"
+cp -a "$goalwatch_root/integrations/obsidian/goalwatch" "$goalwatch_app_stage/goalwatch/_obsidian"
+find "$goalwatch_app_stage/goalwatch" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+find "$goalwatch_app_stage/goalwatch" -depth -type d -name '__pycache__' -empty -delete
+
+goalwatch_bin_stage="$(mktemp "$HOME/.local/bin/.goalwatch.XXXXXX")"
+goalwatch_stages+=("$goalwatch_bin_stage")
+install -m 755 "$goalwatch_root/packaging/bin/goalwatch" "$goalwatch_bin_stage"
+
+goalwatch_unit_stage="$(mktemp --suffix=.service "$goalwatch_config_home/systemd/user/.goalwatch.XXXXXX")"
+goalwatch_stages+=("$goalwatch_unit_stage")
+install -m 644 "$goalwatch_root/packaging/systemd/goalwatch.service" "$goalwatch_unit_stage"
+
+goalwatch_doc_stage="$(mktemp -d "$(dirname -- "$goalwatch_doc")/.goalwatch-doc.XXXXXX")"
+goalwatch_stages+=("$goalwatch_doc_stage")
+install -m 644 "$goalwatch_root/README.md" "$goalwatch_doc_stage/README.md"
+install -m 644 "$goalwatch_root/LICENSE" "$goalwatch_doc_stage/LICENSE"
+cp -a "$goalwatch_root/docs" "$goalwatch_doc_stage/docs"
+
+if [[ $goalwatch_manage_plugin == true ]]; then
+  goalwatch_plugin_stage="$(mktemp -d "$goalwatch_config_home/omarchy/plugins/.goalwatch.XXXXXX")"
+  goalwatch_stages+=("$goalwatch_plugin_stage")
+  cp -a "$goalwatch_root/integrations/omarchy/com.goalwatch/." "$goalwatch_plugin_stage/"
+  omarchy plugin validate "$goalwatch_plugin_stage"
+else
+  omarchy plugin validate "$goalwatch_plugin"
+fi
+systemd-analyze --user verify "$goalwatch_unit_stage"
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$goalwatch_app_stage" \
+  python3 -c 'import goalwatch, goalwatch.cli, goalwatch.daemon'
+
 if systemctl --user is-active --quiet goalwatch.service 2>/dev/null; then
   goalwatch_was_active=true
   systemctl --user stop goalwatch.service
 fi
+goalwatch_transaction_started=true
 
-install -d -m 700 "$goalwatch_app_parent" "$goalwatch_config_home/systemd/user"
-install -d -m 755 "$HOME/.local/bin" "$goalwatch_config_home/omarchy/plugins" "$goalwatch_doc"
-
-goalwatch_stage="$(mktemp -d "$goalwatch_app_parent/.install.XXXXXX")"
-goalwatch_backup="$goalwatch_app_parent/.previous.$$"
-cleanup() {
-  if [[ -d $goalwatch_stage ]]; then
-    rm -rf -- "$goalwatch_stage"
-  fi
-  return 0
-}
-trap cleanup EXIT
-
-cp -a "$goalwatch_root/src/goalwatch" "$goalwatch_stage/goalwatch"
-cp -a "$goalwatch_root/integrations/obsidian/goalwatch" "$goalwatch_stage/goalwatch/_obsidian"
-find "$goalwatch_stage/goalwatch" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
-find "$goalwatch_stage/goalwatch" -depth -type d -name '__pycache__' -empty -delete
-if [[ -d $goalwatch_app ]]; then
-  mv -- "$goalwatch_app" "$goalwatch_backup"
-fi
-mv -- "$goalwatch_stage" "$goalwatch_app"
-if [[ -d $goalwatch_backup ]]; then
-  rm -rf -- "$goalwatch_backup"
-fi
-
-install -m 755 "$goalwatch_root/packaging/bin/goalwatch" "$goalwatch_bin"
-install -m 644 "$goalwatch_root/packaging/systemd/goalwatch.service" "$goalwatch_unit"
-
-if [[ $(realpath -m "$goalwatch_root") != $(realpath -m "$goalwatch_plugin") ]]; then
-  goalwatch_plugin_stage="$(mktemp -d "$goalwatch_config_home/omarchy/plugins/.goalwatch.XXXXXX")"
-  goalwatch_plugin_backup="$goalwatch_config_home/omarchy/plugins/.com.goalwatch.previous.$$"
-  cp -a "$goalwatch_root/integrations/omarchy/com.goalwatch/." "$goalwatch_plugin_stage/"
-  if [[ -d $goalwatch_plugin ]]; then
-    mv -- "$goalwatch_plugin" "$goalwatch_plugin_backup"
-  fi
-  mv -- "$goalwatch_plugin_stage" "$goalwatch_plugin"
-  if [[ -d $goalwatch_plugin_backup ]]; then
-    rm -rf -- "$goalwatch_plugin_backup"
-  fi
-fi
-
-install -m 644 "$goalwatch_root/README.md" "$goalwatch_doc/README.md"
-install -m 644 "$goalwatch_root/LICENSE" "$goalwatch_doc/LICENSE"
-if [[ -d $goalwatch_root/docs ]]; then
-  rm -rf -- "$goalwatch_doc/docs"
-  cp -a "$goalwatch_root/docs" "$goalwatch_doc/docs"
+swap_target "$goalwatch_app" "$goalwatch_app_stage"
+swap_target "$goalwatch_bin" "$goalwatch_bin_stage"
+swap_target "$goalwatch_unit" "$goalwatch_unit_stage"
+swap_target "$goalwatch_doc" "$goalwatch_doc_stage"
+if [[ $goalwatch_manage_plugin == true ]]; then
+  swap_target "$goalwatch_plugin" "$goalwatch_plugin_stage"
 fi
 
 systemctl --user daemon-reload
 "$goalwatch_bin" state-off
-
 omarchy-shell shell rescanPlugins >/dev/null
 omarchy plugin validate "$goalwatch_plugin"
 
@@ -170,6 +290,7 @@ for section in (data.get("bar", {}).get("layout", {}) or {}).values():
 raise SystemExit(1)
 PY
 then
+  goalwatch_widget_added=true
   omarchy plugin enable com.goalwatch --section right
 fi
 
@@ -185,7 +306,7 @@ if [[ $goalwatch_with_obsidian == true ]]; then
     echo "GoalWatch itself is installed, but Obsidian Sync could not be enabled." >&2
     echo "Open/create a local vault and use the one-tap switch in the GoalWatch panel." >&2
     if [[ $goalwatch_obsidian_explicit == true ]]; then
-      goalwatch_obsidian_failed=true
+      exit 1
     fi
   else
     goalwatch_obsidian_ready=true
@@ -195,6 +316,8 @@ fi
 if [[ $goalwatch_was_active == true ]]; then
   systemctl --user start goalwatch.service
 fi
+
+goalwatch_committed=true
 
 echo
 echo "GoalWatch is installed."
@@ -212,8 +335,4 @@ if [[ $goalwatch_obsidian_ready == true ]]; then
   echo "Obsidian Sync is configured. Follow any reload note shown above."
 else
   echo "Obsidian Sync is optional and can be connected from the panel with one tap."
-fi
-
-if [[ $goalwatch_obsidian_failed == true ]]; then
-  exit 1
 fi
