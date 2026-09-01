@@ -16,14 +16,43 @@ The request is sent directly to Google's Gemini API. Google's terms and data
 handling apply to that request. GoalWatch does not proxy it through another
 server.
 
-## Data never retained by GoalWatch
+## Local request audit
 
-- Screenshots are held in memory for one request and are never written to disk.
+GoalWatch intentionally retains every Gemini request attempt so the user can
+inspect the model boundary. Before opening the network connection, it writes:
+
+- the exact JPEG screenshot;
+- the goal and available-tools text;
+- model, endpoint, timestamp, and a readable representation of the request;
+- an explicit placeholder where the inline base64 screenshot would appear.
+
+The API key header is omitted. After the request completes, the same record
+receives the HTTP status, bounded response headers, exact raw response body,
+SHA-256 digest, byte count, latency, token counts, parsed outcome, and error
+code. A response larger than the 512 KiB safety cap stores its exact 512 KiB
+prefix and is visibly marked as truncated. A network failure has no response
+body; a `PENDING` record means the process ended before it could complete the
+record.
+
+The archive is `${XDG_STATE_HOME:-~/.local/state}/goalwatch/audit/`. Its
+directory is mode `0700`; its SQLite database and JPEGs are mode `0600`.
+Screenshots are stored once, next to the database. Records have no automatic
+expiry: use **Request Audit → Clear All** while GoalWatch is stopped, or
+`uninstall.sh --purge`, to remove them. Ordinary uninstall preserves them.
+
+This is operating-system permission protection, not application-level
+encryption. The local account and root can read the archive. Anyone backing up
+the state directory should treat it as sensitive desktop history.
+
+## Data excluded from other stores
+
 - Visible OCR text and window titles are not collected separately.
-- Goal text and Gemini explanations are not stored in the metrics database.
-- The API key is never placed in configuration, arguments, runtime JSON,
+- Goal text, screenshots, raw requests, and Gemini explanations are not stored
+  in the metrics database or logs.
+- The API key is never placed in the audit archive, configuration, arguments,
+  runtime JSON, metrics, or logs.
+- Manual goal and audit search text are never placed in process arguments,
   metrics, or logs.
-- Manual goal text is never placed in process arguments, metrics, or logs.
 
 Manual goal text is stored in the private settings file so it survives a
 restart. The active goal and an alert explanation also temporarily exist in the private
@@ -34,13 +63,13 @@ the per-user runtime directory with mode `0600`.
 ## Local data
 
 The Gemini API key is stored through the desktop Secret Service. Non-secret
-settings are saved in a mode-`0600` JSON file. The local SQLite database stores
-only timestamps, outcomes, model name, latency, token/byte counts, error codes,
-and a SHA-256 fingerprint of the goal. Metrics are pruned after 90 days.
-Private application directories are opened with `O_NOFOLLOW`; config and
-runtime-state reads/writes are descriptor-relative and atomic. Markdown is read
-from a single no-follow file descriptor, preventing a path swap between its
-type/size checks and content read.
+settings are saved in a mode-`0600` JSON file. The separate metrics SQLite
+database stores only timestamps, outcomes, model name, latency, token/byte
+counts, error codes, and a SHA-256 fingerprint of the goal; it is pruned after
+90 days. Private application directories are opened with `O_NOFOLLOW`; config,
+runtime-state, metrics, and audit access are descriptor-anchored. Markdown is
+read from a single no-follow file descriptor, preventing a path swap between
+its type/size checks and content read.
 
 ## Safety behavior
 
@@ -50,6 +79,9 @@ type/size checks and content read.
   hard stdout/stderr limits, total deadlines, and process-group cleanup.
 - Gemini response bodies are capped at 512 KiB. Redirects are rejected, so the
   API-key header is never replayed to a redirect target.
+- If the request and screenshot cannot be durably added to the audit archive,
+  the Gemini request is not sent. If the response cannot be attached, no alert
+  is allowed.
 - Screenshot text is labelled as untrusted content in the Gemini instruction to
   reduce prompt-injection risk.
 - The model must return the exact structured schema. The local client validates
@@ -60,7 +92,8 @@ type/size checks and content read.
   Quickshell.
 
 Stop GoalWatch at any time from the eye button or with `goalwatch stop`. While it
-is off, it performs no capture and makes no Gemini request.
+is off, it performs no capture and makes no Gemini request. Existing audit
+records remain readable until explicitly cleared.
 
 Obsidian is not required and is never modified by a default installation.
 Turning on Obsidian Sync explicitly installs the companion into one local vault

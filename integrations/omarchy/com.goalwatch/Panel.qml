@@ -30,6 +30,17 @@ Panel {
   property bool syncingFields: false
   property bool manualSaveQueued: false
   property int pendingObsidianAction: 0
+  property bool auditMode: false
+  property var auditRecords: []
+  property var selectedAudit: ({})
+  property int auditTotal: 0
+  property int auditOffset: 0
+  property int auditLimit: 50
+  property string auditOutcome: "all"
+  property string auditError: ""
+  property bool auditQueryQueued: false
+  property bool clearAuditArmed: false
+  property int pendingAuditId: 0
   readonly property double nowMs: liveClock.date.getTime()
   readonly property string statusText: snapshot.state === undefined ? "OFF" : bounded(snapshot.state, 40)
   readonly property color eyeColor: alertActive ? alertRed : (effectiveActive ? watchBlue : dim)
@@ -216,6 +227,117 @@ Panel {
 
   function refreshState() { stateFile.reload() }
 
+  function openAudit() {
+    auditMode = true
+    auditOffset = 0
+    auditError = ""
+    clearAuditArmed = false
+    queryAudit()
+  }
+
+  function closeAudit() {
+    auditMode = false
+    clearAuditArmed = false
+    auditSearchField.text = ""
+    auditOutcome = "all"
+    selectedAudit = ({})
+  }
+
+  function queryAudit() {
+    if (auditQueryProc.running) {
+      auditQueryQueued = true
+      return
+    }
+    auditError = ""
+    auditQueryQueued = false
+    auditQueryProc.payload = JSON.stringify({
+      "outcome": auditOutcome,
+      "query": String(auditSearchField.text || "").slice(0, 200),
+      "limit": auditLimit,
+      "offset": auditOffset
+    })
+    auditQueryProc.running = true
+  }
+
+  function handleAuditQuery(content) {
+    try {
+      var response = JSON.parse(String(content || "{}"))
+      auditRecords = Array.isArray(response.records) ? response.records : []
+      auditTotal = Number(response.total || 0)
+      auditOffset = Number(response.offset || 0)
+      if (auditRecords.length > 0)
+        loadAudit(Number(auditRecords[0].id))
+      else
+        selectedAudit = ({})
+    } catch (e) {
+      auditError = "Could not read the audit index."
+    }
+  }
+
+  function loadAudit(recordId) {
+    if (!isFinite(recordId)) return
+    if (auditDetailProc.running) {
+      pendingAuditId = Math.floor(recordId)
+      return
+    }
+    pendingAuditId = 0
+    auditError = ""
+    auditDetailProc.command = ["goalwatch", "audit", "show", String(Math.floor(recordId))]
+    auditDetailProc.running = true
+  }
+
+  function handleAuditDetail(content) {
+    try {
+      var response = JSON.parse(String(content || "{}"))
+      selectedAudit = response && typeof response === "object" ? response : ({})
+    } catch (e) {
+      auditError = "Could not read that audit record."
+    }
+  }
+
+  function auditOutcomeLabel(value) {
+    if (value === "on_goal") return "ON GOAL"
+    if (value === "off_goal") return "OFF GOAL"
+    if (value === "pending") return "PENDING"
+    return "ERROR"
+  }
+
+  function auditOutcomeColor(value) {
+    if (value === "on_goal") return root.watchBlue
+    if (value === "off_goal") return root.alertRed
+    if (value === "pending") return root.dim
+    return "#F2B84B"
+  }
+
+  function auditTime(value) {
+    var date = new Date(String(value || ""))
+    return isNaN(date.getTime()) ? "Unknown time" : date.toLocaleString(Qt.locale(), "yyyy-MM-dd  HH:mm:ss")
+  }
+
+  function auditImageUrl(value) {
+    var path = String(value || "")
+    return path === "" ? "" : "file://" + encodeURI(path)
+  }
+
+  function clearAudit() {
+    if (auditClearProc.running) return
+    if (!clearAuditArmed) {
+      clearAuditArmed = true
+      clearAuditArmTimer.restart()
+      return
+    }
+    clearAuditArmed = false
+    auditClearProc.running = true
+  }
+
+  IpcHandler {
+    target: "com.goalwatch.audit"
+    function open(): void {
+      root.openAudit()
+      root.open()
+    }
+  }
+
   onOpenedChanged: if (opened) {
     refreshState()
     syncFields()
@@ -240,6 +362,65 @@ Panel {
         root.saveError = "Could not toggle GoalWatch."
       }
       settleTimer.restart()
+    }
+  }
+
+  Process {
+    id: auditQueryProc
+    property string payload: ""
+    property bool responseSeen: false
+    command: ["goalwatch", "audit", "query"]
+    stdinEnabled: true
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        auditQueryProc.responseSeen = true
+        root.handleAuditQuery(text)
+      }
+    }
+    onStarted: write(payload + "\n")
+    onExited: function(exitCode) {
+      payload = ""
+      if (exitCode !== 0 && !responseSeen) root.auditError = "Could not query the audit archive."
+      responseSeen = false
+      if (root.auditQueryQueued) Qt.callLater(root.queryAudit)
+    }
+  }
+
+  Process {
+    id: auditDetailProc
+    property bool responseSeen: false
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        auditDetailProc.responseSeen = true
+        root.handleAuditDetail(text)
+      }
+    }
+    onExited: function(exitCode) {
+      if (exitCode !== 0 && !responseSeen) root.auditError = "Could not load the audit record."
+      responseSeen = false
+      if (root.pendingAuditId > 0) {
+        var nextId = root.pendingAuditId
+        root.pendingAuditId = 0
+        Qt.callLater(function() { root.loadAudit(nextId) })
+      }
+    }
+  }
+
+  Process {
+    id: auditClearProc
+    command: ["goalwatch", "audit", "clear"]
+    stdinEnabled: true
+    onStarted: write("CLEAR\n")
+    onExited: function(exitCode) {
+      if (exitCode === 0) {
+        root.auditOffset = 0
+        root.selectedAudit = ({})
+        root.queryAudit()
+      } else {
+        root.auditError = "Could not clear the audit archive."
+      }
     }
   }
 
@@ -331,6 +512,23 @@ Panel {
   }
 
   Timer {
+    id: auditSearchTimer
+    interval: 450
+    repeat: false
+    onTriggered: {
+      root.auditOffset = 0
+      root.queryAudit()
+    }
+  }
+
+  Timer {
+    id: clearAuditArmTimer
+    interval: 5000
+    repeat: false
+    onTriggered: root.clearAuditArmed = false
+  }
+
+  Timer {
     id: settleTimer
     interval: 420
     repeat: false
@@ -385,15 +583,22 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(420))
-    contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(720))
+    contentWidth: panel.fittedContentWidth(Style.space(root.auditMode ? 940 : 420))
+    contentHeight: panel.fittedContentHeight(
+      root.auditMode ? Style.space(720) : content.implicitHeight,
+      Style.space(root.auditMode ? 760 : 720)
+    )
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
       blocked: intervalField.activeFocus || modelField.activeFocus || pathField.activeFocus
         || apiKeyField.activeFocus || goalField.activeFocus || toolsField.activeFocus
-      onCloseRequested: root.close()
+        || auditSearchField.activeFocus || auditRequestArea.activeFocus || auditResponseArea.activeFocus
+      onCloseRequested: {
+        if (root.auditMode) root.closeAudit()
+        else root.close()
+      }
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
         if (t === "t" || t === "T") root.toggleWatching()
@@ -401,6 +606,7 @@ Panel {
       }
 
       Flickable {
+        visible: !root.auditMode
         anchors.fill: parent
         contentWidth: width
         contentHeight: content.implicitHeight
@@ -695,6 +901,62 @@ Panel {
           PanelSeparator { width: parent.width; foreground: root.foreground }
           PanelSectionHeader { text: "SETTINGS"; foreground: root.foreground; fontFamily: root.fontFamily }
 
+          Rectangle {
+            width: parent.width
+            height: Style.space(56)
+            radius: 5
+            color: root.cardColor
+            border.width: 1
+            border.color: root.dim
+
+            EyeIcon {
+              width: Style.space(28)
+              height: Style.space(19)
+              anchors.left: parent.left
+              anchors.leftMargin: Style.space(12)
+              anchors.verticalCenter: parent.verticalCenter
+              color: root.watchBlue
+              dotColor: root.watchBlue
+            }
+            Column {
+              anchors.left: parent.left
+              anchors.leftMargin: Style.space(52)
+              anchors.right: auditOpenArrow.left
+              anchors.rightMargin: Style.space(10)
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(2)
+              Text {
+                text: "REQUEST AUDIT"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                font.letterSpacing: 0.8
+              }
+              Text {
+                text: "Screenshots, prompts, raw responses and failures"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+            Text {
+              id: auditOpenArrow
+              anchors.right: parent.right
+              anchors.rightMargin: Style.space(14)
+              anchors.verticalCenter: parent.verticalCenter
+              text: "→"
+              color: root.watchBlue
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+            }
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.openAudit()
+            }
+          }
+
           Column {
             width: parent.width
             spacing: Style.space(5)
@@ -784,6 +1046,447 @@ Panel {
           }
         }
       }
+
+      Item {
+        id: auditView
+        anchors.fill: parent
+        visible: root.auditMode
+
+        Column {
+          anchors.fill: parent
+          spacing: Style.space(10)
+
+          Item {
+            id: auditHeader
+            width: parent.width
+            height: Style.space(42)
+
+            AuditAction {
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              label: "← SETTINGS"
+              onClicked: root.closeAudit()
+            }
+
+            Column {
+              anchors.centerIn: parent
+              spacing: Style.space(1)
+              Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "REQUEST AUDIT"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.title
+                font.bold: true
+                font.letterSpacing: 1.2
+              }
+              Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: root.auditTotal + " LOCAL RECORD" + (root.auditTotal === 1 ? "" : "S")
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.letterSpacing: 0.7
+              }
+            }
+
+            AuditAction {
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              width: Style.space(root.clearAuditArmed ? 150 : 92)
+              label: root.clearAuditArmed ? "CONFIRM CLEAR" : "CLEAR ALL"
+              danger: true
+              busy: auditClearProc.running
+              enabled: !root.effectiveActive
+              onClicked: root.clearAudit()
+            }
+          }
+
+          Row {
+            id: auditFilters
+            width: parent.width
+            height: Style.space(36)
+            spacing: Style.space(7)
+
+            Repeater {
+              model: [
+                {"label": "ALL", "value": "all"},
+                {"label": "ON GOAL", "value": "on_goal"},
+                {"label": "OFF GOAL", "value": "off_goal"},
+                {"label": "PENDING", "value": "pending"},
+                {"label": "ERRORS", "value": "error"}
+              ]
+              delegate: Rectangle {
+                required property var modelData
+                width: filterLabel.implicitWidth + Style.space(18)
+                height: auditFilters.height
+                radius: 4
+                color: root.auditOutcome === modelData.value ? root.cardColor : "transparent"
+                border.width: 1
+                border.color: root.auditOutcome === modelData.value ? root.watchBlue : root.dim
+                Text {
+                  id: filterLabel
+                  anchors.centerIn: parent
+                  text: modelData.label
+                  color: root.auditOutcome === modelData.value ? root.watchBlue : root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                  font.letterSpacing: 0.6
+                }
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    root.auditOutcome = modelData.value
+                    root.auditOffset = 0
+                    root.queryAudit()
+                  }
+                }
+              }
+            }
+
+            TextField {
+              id: auditSearchField
+              width: parent.width - x
+              height: parent.height
+              foreground: root.foreground
+              accent: root.watchBlue
+              placeholderText: "Filter goal, model, response or error…"
+              onTextEdited: auditSearchTimer.restart()
+            }
+          }
+
+          Text {
+            visible: root.auditError !== ""
+            width: parent.width
+            text: root.bounded(root.auditError, 600)
+            textFormat: Text.PlainText
+            color: root.alertRed
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          Text {
+            visible: root.effectiveActive
+            width: parent.width
+            text: "Stop watching before clearing the archive. Reading and filtering remain available."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            horizontalAlignment: Text.AlignRight
+          }
+
+          Row {
+            id: auditBody
+            width: parent.width
+            height: parent.height - auditHeader.height - auditFilters.height
+              - auditFooter.height - (root.auditError === "" ? 0 : Style.space(20))
+              - (root.effectiveActive ? Style.space(20) : 0)
+              - parent.spacing * 3
+            spacing: Style.space(10)
+
+            Rectangle {
+              width: Style.space(286)
+              height: parent.height
+              color: root.cardColor
+              radius: 5
+              border.width: 1
+              border.color: root.dim
+
+              ListView {
+                id: auditList
+                anchors.fill: parent
+                anchors.margins: 1
+                clip: true
+                spacing: 1
+                model: root.auditRecords
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                delegate: Rectangle {
+                  required property var modelData
+                  width: auditList.width
+                  height: Style.space(82)
+                  color: Number(root.selectedAudit.id || 0) === Number(modelData.id)
+                    ? Qt.rgba(root.watchBlue.r, root.watchBlue.g, root.watchBlue.b, 0.12)
+                    : "transparent"
+
+                  Rectangle {
+                    width: 3
+                    height: parent.height
+                    color: root.auditOutcomeColor(String(modelData.outcome || "error"))
+                  }
+                  Column {
+                    anchors.left: parent.left
+                    anchors.leftMargin: Style.space(12)
+                    anchors.right: parent.right
+                    anchors.rightMargin: Style.space(8)
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: Style.space(3)
+                    Row {
+                      width: parent.width
+                      spacing: Style.space(7)
+                      Text {
+                        text: root.auditOutcomeLabel(String(modelData.outcome || "error"))
+                        color: root.auditOutcomeColor(String(modelData.outcome || "error"))
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        font.bold: true
+                        font.letterSpacing: 0.6
+                      }
+                      Text {
+                        text: root.auditTime(modelData.requested_at)
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                      }
+                    }
+                    Text {
+                      width: parent.width
+                      text: root.bounded(modelData.goal || "No goal", 180)
+                      textFormat: Text.PlainText
+                      color: root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.body
+                      font.bold: true
+                      elide: Text.ElideRight
+                    }
+                    Text {
+                      width: parent.width
+                      text: root.bounded(modelData.model || modelData.error_code || "", 120)
+                      textFormat: Text.PlainText
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      elide: Text.ElideRight
+                    }
+                  }
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.loadAudit(Number(modelData.id))
+                  }
+                }
+
+                Text {
+                  visible: auditList.count === 0 && !auditQueryProc.running
+                  anchors.centerIn: parent
+                  width: parent.width - Style.space(30)
+                  text: "No requests match this filter."
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  horizontalAlignment: Text.AlignHCenter
+                  wrapMode: Text.WordWrap
+                }
+              }
+            }
+
+            Rectangle {
+              width: parent.width - Style.space(296)
+              height: parent.height
+              color: root.cardColor
+              radius: 5
+              border.width: 1
+              border.color: root.dim
+
+              Flickable {
+                anchors.fill: parent
+                anchors.margins: Style.space(12)
+                contentWidth: width
+                contentHeight: auditDetailContent.implicitHeight
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                Column {
+                  id: auditDetailContent
+                  width: parent.width
+                  spacing: Style.space(10)
+
+                  Text {
+                    visible: !root.selectedAudit.id
+                    width: parent.width
+                    text: "Select a request to inspect its captured screen and exact model response."
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    wrapMode: Text.WordWrap
+                    horizontalAlignment: Text.AlignHCenter
+                  }
+
+                  Row {
+                    visible: !!root.selectedAudit.id
+                    width: parent.width
+                    spacing: Style.space(10)
+                    Text {
+                      text: root.auditOutcomeLabel(String(root.selectedAudit.outcome || "error"))
+                      color: root.auditOutcomeColor(String(root.selectedAudit.outcome || "error"))
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.title
+                      font.bold: true
+                      font.letterSpacing: 1.0
+                    }
+                    Text {
+                      text: root.auditTime(root.selectedAudit.requested_at)
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      anchors.verticalCenter: parent.verticalCenter
+                    }
+                  }
+
+                  Text {
+                    visible: !!root.selectedAudit.id
+                    width: parent.width
+                    text: root.bounded(root.selectedAudit.goal || "", 2000)
+                    textFormat: Text.PlainText
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.title
+                    font.bold: true
+                    wrapMode: Text.WordWrap
+                  }
+
+                  Rectangle {
+                    visible: !!root.selectedAudit.id
+                    width: parent.width
+                    height: Style.space(270)
+                    radius: 4
+                    color: "#05070A"
+                    border.width: 1
+                    border.color: root.dim
+                    Image {
+                      anchors.fill: parent
+                      anchors.margins: 1
+                      source: root.auditImageUrl(root.selectedAudit.image_path)
+                      fillMode: Image.PreserveAspectFit
+                      asynchronous: true
+                      cache: false
+                    }
+                  }
+
+                  GridLayout {
+                    visible: !!root.selectedAudit.id
+                    width: parent.width
+                    columns: 4
+                    columnSpacing: Style.space(12)
+                    rowSpacing: Style.space(4)
+                    AuditMeta { label: "MODEL"; value: root.selectedAudit.model || "—" }
+                    AuditMeta { label: "HTTP"; value: root.selectedAudit.http_status || "—" }
+                    AuditMeta { label: "LATENCY"; value: root.selectedAudit.latency_ms ? root.selectedAudit.latency_ms + " ms" : "—" }
+                    AuditMeta { label: "RESPONSE"; value: (root.selectedAudit.response_bytes || 0) + " bytes" }
+                    AuditMeta { label: "ERROR"; value: root.selectedAudit.error_code || "—" }
+                    AuditMeta { label: "CAPTURE"; value: (root.selectedAudit.image_bytes || 0) + " bytes" }
+                    AuditMeta { label: "INPUT TOKENS"; value: String(root.selectedAudit.prompt_tokens || 0) }
+                    AuditMeta { label: "OUTPUT TOKENS"; value: String(root.selectedAudit.output_tokens || 0) }
+                  }
+
+                  Text {
+                    visible: !!root.selectedAudit.id
+                    text: "REQUEST PAYLOAD · API KEY OMITTED"
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                    font.letterSpacing: 0.7
+                  }
+                  TextArea {
+                    id: auditRequestArea
+                    visible: !!root.selectedAudit.id
+                    width: parent.width
+                    height: Style.space(180)
+                    readOnly: true
+                    selectByMouse: true
+                    text: root.bounded(root.selectedAudit.request_json || "", 24000)
+                    textFormat: TextEdit.PlainText
+                    wrapMode: TextEdit.WrapAnywhere
+                    color: root.foreground
+                    selectionColor: root.watchBlue
+                    selectedTextColor: "white"
+                    font.family: "Adwaita Mono"
+                    font.pixelSize: Style.font.caption
+                    background: Rectangle { color: "#05070A"; radius: 4; border.width: 1; border.color: root.dim }
+                  }
+
+                  Text {
+                    visible: !!root.selectedAudit.id
+                    text: "RAW MODEL RESPONSE · " + String(root.selectedAudit.raw_response_encoding || "utf-8").toUpperCase()
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                    font.letterSpacing: 0.7
+                  }
+                  TextArea {
+                    id: auditResponseArea
+                    visible: !!root.selectedAudit.id
+                    width: parent.width
+                    height: Style.space(190)
+                    readOnly: true
+                    selectByMouse: true
+                    text: root.bounded(root.selectedAudit.raw_response || "", 700000)
+                    textFormat: TextEdit.PlainText
+                    wrapMode: TextEdit.WrapAnywhere
+                    color: root.foreground
+                    selectionColor: root.watchBlue
+                    selectedTextColor: "white"
+                    font.family: "Adwaita Mono"
+                    font.pixelSize: Style.font.caption
+                    background: Rectangle { color: "#05070A"; radius: 4; border.width: 1; border.color: root.dim }
+                  }
+
+                  Text {
+                    visible: !!root.selectedAudit.id
+                    width: parent.width
+                    text: root.selectedAudit.response_truncated
+                      ? "Response exceeded the 512 KiB safety cap; the stored prefix is marked truncated."
+                      : "SHA-256 · " + root.bounded(root.selectedAudit.response_sha256 || "EMPTY RESPONSE", 80)
+                    textFormat: Text.PlainText
+                    color: root.selectedAudit.response_truncated ? root.alertRed : root.dim
+                    font.family: "Adwaita Mono"
+                    font.pixelSize: Style.font.caption
+                    wrapMode: Text.WordWrap
+                  }
+                }
+              }
+            }
+          }
+
+          Item {
+            id: auditFooter
+            width: parent.width
+            height: Style.space(32)
+
+            AuditAction {
+              anchors.left: parent.left
+              label: "← PREVIOUS"
+              enabled: root.auditOffset > 0 && !auditQueryProc.running
+              onClicked: {
+                root.auditOffset = Math.max(0, root.auditOffset - root.auditLimit)
+                root.queryAudit()
+              }
+            }
+            Text {
+              anchors.centerIn: parent
+              text: root.auditTotal === 0 ? "0 / 0" : (root.auditOffset + 1) + "–"
+                + Math.min(root.auditOffset + root.auditLimit, root.auditTotal) + " / " + root.auditTotal
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            AuditAction {
+              anchors.right: parent.right
+              label: "NEXT →"
+              enabled: root.auditOffset + root.auditLimit < root.auditTotal && !auditQueryProc.running
+              onClicked: {
+                root.auditOffset += root.auditLimit
+                root.queryAudit()
+              }
+            }
+          }
+        }
+      }
     }
   }
 
@@ -821,6 +1524,59 @@ Panel {
         font.bold: true
         elide: Text.ElideRight
       }
+    }
+  }
+
+  component AuditAction: Rectangle {
+    property string label: "ACTION"
+    property bool danger: false
+    property bool busy: false
+    signal clicked()
+    width: Style.space(104)
+    height: Style.space(32)
+    radius: 4
+    color: "transparent"
+    opacity: enabled ? 1.0 : 0.4
+    border.width: 1
+    border.color: danger ? root.alertRed : root.dim
+    Text {
+      anchors.centerIn: parent
+      text: parent.busy ? "WORKING…" : parent.label
+      color: parent.danger ? root.alertRed : root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+      font.letterSpacing: 0.5
+    }
+    MouseArea {
+      anchors.fill: parent
+      enabled: parent.enabled && !parent.busy
+      cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+      onClicked: parent.clicked()
+    }
+  }
+
+  component AuditMeta: Column {
+    property string label: ""
+    property string value: "—"
+    Layout.fillWidth: true
+    spacing: Style.space(2)
+    Text {
+      text: parent.label
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      font.letterSpacing: 0.6
+    }
+    Text {
+      width: parent.width
+      text: root.bounded(parent.value, 160)
+      textFormat: Text.PlainText
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+      elide: Text.ElideRight
     }
   }
 }

@@ -8,7 +8,8 @@
 
 GoalWatch runs as a small systemd user service. At a configurable interval it
 reads the goal entered in its Omarchy panel, captures the visible Wayland
-desktop in memory, and asks Gemini whether the screen is useful to that goal.
+desktop, archives the exact check locally, and asks Gemini whether the screen
+is useful to that goal.
 On-goal and ambiguous activity stay silent. A clear deviation opens a blocking
 intervention on every display. No goal means no capture and no Gemini request.
 
@@ -23,6 +24,7 @@ is an optional, one-tap integration.
 - A full-screen, keyboard-exclusive alert that cannot be dismissed by Escape or an outside click.
 - Optional one-tap Obsidian Sync for Daily Notes, current-file selection, goal insertion, and `@goal` expansion.
 - Exact Gemini structured output with conservative classification and fail-open error handling.
+- A private request-audit browser with screenshots, sanitized requests, exact raw model responses, filters, and pagination.
 - Local, content-free metrics for focus score, checks, alerts, latency, usage, and return-to-goal time.
 - User-local install, update, and uninstall scripts. Nothing under `/usr/share/omarchy` is modified.
 
@@ -44,16 +46,20 @@ Omarchy eye ── start/stop/settings ─────────┤
                                            ▼
                                  systemd user service
                             Goal source  grim  Secret Service
+                                  ├──── private request audit
                                   └──── prompt + JPEG ────▶ Gemini
                                                             │
                              Quickshell overlay ◀── runtime state
+                             Audit browser      ◀── request + raw response
                              Local metrics      ◀── metadata only
 ```
 
-Checks run on monotonic deadlines and never overlap. Screenshots are read from
-`grim` through stdout, sent once, and discarded without being written to disk.
-Invalid model output, network problems, missing setup, capture failures, and a
-locked session never create an alert.
+Checks run on monotonic deadlines and never overlap. Before any network call,
+GoalWatch writes the screenshot and a key-free representation of the request to
+its private audit archive. The exact bounded response body is attached when
+Gemini completes, including HTTP failures. If the request cannot be audited, it
+is not sent. Invalid model output, network problems, missing setup, capture
+failures, and a locked session never create an alert.
 
 ## Requirements
 
@@ -173,6 +179,7 @@ path on the next date resumes automatic daily-note following.
 | API Key | Empty replacement field backed by Secret Service; double-click the label to open Google AI Studio. |
 | Obsidian Sync | Optional one-tap companion install/removal; off by default. |
 | Synced Markdown File | Daily path supplied by Obsidian or an absolute override, visible only while sync is on. |
+| Request Audit | Opens the local searchable history with screenshots, request payloads, raw responses, outcomes, and failures. |
 
 Changes save automatically. Invalid values remain unsaved and visible in the
 panel. Session durations and check countdowns update live while the panel is
@@ -183,11 +190,20 @@ pressed; acknowledgement starts a fresh countdown.
 
 Each enabled check sends the current goal, available-tools sentence, and one
 compressed screenshot directly to Google's Gemini API. GoalWatch has no proxy,
-account service, telemetry endpoint, or screenshot history.
+account service, or telemetry endpoint. It deliberately keeps a local audit
+history so the user can inspect what was sent and exactly what came back.
 
-- Screenshots stay in memory and are never saved by GoalWatch.
+- Every attempted Gemini request is stored under
+  `${XDG_STATE_HOME:-~/.local/state}/goalwatch/audit/` with its screenshot,
+  goal, model, sanitized request document, outcome, timing, and exact raw
+  response body up to the 512 KiB safety cap.
+- Audit data is private to the local user (`0700` directory, `0600` files), has
+  no automatic retention limit, and remains until **Clear All** or uninstall
+  with `--purge`. Stop watching before clearing it.
 - The Gemini key is stored in the desktop Secret Service and never appears in config, argv, UI state, metrics, or logs.
-- Metrics never retain goal text, screenshots, visible text, window titles, or Gemini explanations.
+- The audit request replaces the key and inline base64 image with explicit
+  omissions; the original JPEG is stored once alongside the database.
+- Metrics and logs never retain goal text, screenshots, visible text, window titles, requests, or Gemini explanations.
 - Child-process and Gemini response streams have hard byte limits and deadlines; redirects are rejected before the API key can be replayed.
 - Private config, runtime state, metrics, and Markdown reads use no-follow, descriptor-anchored I/O.
 - Local metric rows are pruned after 90 days.
@@ -204,6 +220,8 @@ goalwatch stop                  # disable watching
 goalwatch toggle                # toggle the service
 goalwatch status                # current runtime state as JSON
 goalwatch metrics               # local aggregate metrics
+goalwatch audit query           # paginated audit index; filters arrive on stdin
+goalwatch audit show 42         # full record, screenshot path and raw response
 goalwatch run-once              # one credentialed check now
 goalwatch dismiss               # recovery path for an active alert
 goalwatch doctor                # dependency and session diagnostics
@@ -225,6 +243,21 @@ The panel also sends manual goal edits through stdin. For scripting:
 printf '%s\n' '{"goal":"Ship the release","tools":"Codex and Browser"}' \
   | goalwatch config set-manual-goal
 ```
+
+Audit queries keep private search text out of process arguments:
+
+```bash
+printf '%s\n' '{"outcome":"off_goal","query":"release","limit":50,"offset":0}' \
+  | goalwatch audit query
+goalwatch audit show 42
+printf 'CLEAR\n' | goalwatch audit clear  # service must be stopped
+```
+
+The settings panel is the intended viewer. It filters by outcome or text,
+paginates every record, shows the captured screen, and exposes the sanitized
+request and raw response for selection and copying. `PENDING` means the process
+ended before a response could be attached; network failures are completed as
+`ERROR` records with an empty response.
 
 Test the alert without taking a screenshot or spending API quota:
 
@@ -251,16 +284,16 @@ Run the complete offline verification suite:
 ```
 
 It covers the Python core, Gemini schema and failure paths, scheduling,
-configuration safety, local metrics, shell/JSON/QML checks, and the Obsidian
+configuration safety, request auditing, local metrics, shell/JSON/QML checks, and the Obsidian
 integration. The optional `./scripts/ai_benchmark.py` makes eight labelled live
-Gemini requests using the locally stored key; it reports precision and false
-alert rate without retaining responses.
+Gemini requests using the locally stored key; those requests use the same audit
+path as normal checks and the script reports precision and false-alert rate.
 
 Repository map:
 
 ```text
 manifest.json, preview.png               Omarchy marketplace contract
-src/goalwatch/                         daemon, CLI, capture, Gemini, state, metrics
+src/goalwatch/                         daemon, CLI, capture, Gemini, audit, state, metrics
 integrations/omarchy/com.goalwatch/    Quickshell bar, panel, and alert
 integrations/obsidian/goalwatch/       Obsidian desktop companion
 packaging/                             CLI launcher and systemd user unit
@@ -285,8 +318,8 @@ know about GoalWatch's user service or Obsidian integration.
 ```
 
 This removes the runtime and both integrations while preserving config, key,
-and metrics. From a development checkout, use `./uninstall.sh` instead. Remove
-local data too with:
+metrics, and the request audit. From a development checkout, use
+`./uninstall.sh` instead. Remove local data too with:
 
 ```bash
 ~/.config/omarchy/plugins/com.goalwatch/uninstall.sh --purge

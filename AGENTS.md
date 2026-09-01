@@ -8,7 +8,11 @@ These rules apply to human and AI-assisted contributions throughout the reposito
 - Keep GoalWatch Omarchy-first and user-local. Never write to `/usr/share/omarchy`.
 - Keep the resident Python runtime standard-library-only. A new runtime dependency requires a measured reason and an update to the size and privacy documentation.
 - Preserve fail-open behavior: only an exact, locally validated `alert: true` Gemini result may show the intervention.
-- Keep screenshots in memory. Never persist screenshots, OCR, window titles, goal text, API keys, or Gemini explanations in metrics or logs.
+- Keep the user-visible request audit complete: persist each sent screenshot,
+  goal, sanitized request document, and bounded raw Gemini response in the
+  private audit archive. Never place this content in metrics or logs, and never
+  persist the API key in the archive, config, argv, runtime state, metrics, or
+  logs.
 - Keep the API key in Secret Service and pass replacements over stdin, never argv.
 - A first install must leave the service disabled and off.
 - The alert must cover every display, take exclusive keyboard focus, ignore Escape and outside clicks, and dismiss only through its acknowledgement action or the recovery CLI.
@@ -42,6 +46,7 @@ reload is stale, trigger `goalwatch debug alert`, inspect every connected
 display, dismiss it, and confirm that no `goalwatch-alert` layer remains. Never
 leave a synthetic alert or the service running after QA.
 
-For privacy or Gemini changes, add a regression test that proves the relevant
-data cannot enter config, argv, runtime metrics, or logs. Do not use a real API
-key in automated tests.
+For privacy or Gemini changes, add regression tests for the intended boundary:
+auditable request content must reach only the private archive, while secrets
+and audit content cannot enter config, argv, runtime metrics, or logs. Do not
+use a real API key in automated tests.

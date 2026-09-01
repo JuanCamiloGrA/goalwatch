@@ -1,4 +1,4 @@
-# GoalWatch 0.2.0 verification report
+# GoalWatch 0.3.0 verification report
 
 Verified on 2026-09-01 with Omarchy 4.0.2, Quickshell 0.3.1, and Python 3.14.
 
@@ -6,7 +6,7 @@ Verified on 2026-09-01 with Omarchy 4.0.2, Quickshell 0.3.1, and Python 3.14.
 
 | Check | Result | Budget |
 |---|---:|---:|
-| Executable install size, including both plugins | 139,572 bytes | < 1 MiB |
+| Executable install size, including both plugins | 193,952 bytes | < 1 MiB |
 | Sleeping daemon CPU over 60 seconds | 0.15% | <= 0.5% |
 | Maximum daemon RSS during that sample | 28,184 KiB | <= 30 MiB |
 | Real desktop capture | 145,758 bytes, 1920×1080, 69 ms | <= 1920 px long edge, < 8 MiB |
@@ -21,12 +21,16 @@ process while sleeping.
 
 ## Automated checks
 
-- 59 Python unit/integration tests pass.
+- 72 Python unit/integration tests pass.
 - Node-based Obsidian tests pass for daily-note resolution, canonical goal
   insertion, and `@goal` replacement.
 - Gemini tests use a local HTTP server and cover alert true/false, exact schema,
   extra fields, semantic mismatch, HTTP 429, network failure, usage metadata,
   image-size rejection, response-size enforcement, and redirect rejection.
+- Audit regressions cover exact UTF-8 and binary raw-response recovery, the
+  original JPEG, private file modes, request-before-network ordering, HTTP and
+  network failures, filtering, pagination, clearing, symlink refusal, and
+  absence of the API key from every archive file.
 - Goal parsing covers latest-valid selection, malformed tails, default tools,
   CRLF, Unicode, symlinks, invalid UTF-8, path escape, and input bounds.
 - Scheduler tests use a fake monotonic clock for interval reset, a large resume
@@ -50,7 +54,7 @@ Run them with:
 ## Live integration checks
 
 - A complete uninstall/reinstall cycle succeeded and preserved config, keyring,
-  and metrics data by default.
+  metrics, and request-audit data by default.
 - The final install is disabled and off until the user clicks the eye.
 - A fresh configuration starts in manual mode and an empty goal produces
   `NO GOAL` without a capture, request, or alert.
@@ -61,7 +65,7 @@ Run them with:
   immediately, the companion directory and registry entry were removed and
   restored, and all nine unrelated community plugins remained unchanged.
 - Re-running the default installer updated an already-authorized Obsidian
-  companion to 0.2.0 without requiring `--with-obsidian` again.
+  companion to 0.3.0 without requiring `--with-obsidian` again.
 - The fresh Quickshell process loaded GoalWatch without GoalWatch QML warnings.
 - A literal HTML-like goal and explanation rendered visibly as plain text; no
   markup, image, or local-file interpretation occurred.
@@ -71,6 +75,11 @@ Run them with:
   connected monitor and cleared through the same CLI action used by the button.
 - The API-key field is password-masked, starts empty, sends its replacement over
   child-process stdin, and never receives the current key from the daemon.
+- The Request Audit entry opened a native two-pane browser from settings and
+  through its QA IPC target. A synthetic record displayed its screenshot,
+  sanitized payload, exact raw response, HTTP/latency/byte/token metadata, and
+  outcome; outcome filters, search, pagination, and the two-step clear path
+  worked. The synthetic record and capture were removed after inspection.
 - The public GitHub repository was installed through `omarchy plugin add`, then
   completed with the checkout-local setup script. The Git checkout remained
   clean and updateable, the service remained disabled/off, and the nested QML
@@ -89,8 +98,9 @@ model-quality gate is not recorded as passing. No desktop capture was used and
 the key was never printed.
 
 The reproducible command is `./scripts/ai_benchmark.py`; it reports per-case
-latency, precision, false-alert rate, and upstream errors without retaining
-model responses.
+latency, precision, false-alert rate, and upstream errors. From 0.3.0 onward,
+benchmark requests are retained in the same private audit archive as normal
+checks.
 
 The client follows Google's current `generateContent` authentication and inline
 image contract and uses `responseJsonSchema`, then independently validates the

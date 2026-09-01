@@ -6,6 +6,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
+from .audit import AuditError, AuditStore
 from .capture import CaptureError, capture_desktop
 from .config import load_config
 from .gemini import GeminiClient, GeminiError
@@ -124,10 +125,12 @@ class GoalWatchDaemon:
     def _perform_check(self, config: dict, goal: Goal, key: str) -> None:
         self._write({"state": "CHECKING", "error": "", "next_check_at": ""})
         image = b""
+        audit: AuditStore | None = None
         goal_hash = hashlib.sha256(goal.description.encode("utf-8")).hexdigest()
         try:
             image = capture_desktop()
-            decision = GeminiClient(key, config["model"]).classify(goal, image)
+            audit = AuditStore()
+            decision = GeminiClient(key, config["model"]).classify(goal, image, audit=audit)
         except CaptureError as issue:
             self.metrics.record_check(
                 self.session_id,
@@ -138,6 +141,23 @@ class GoalWatchDaemon:
                 error_code="capture",
             )
             self._write({"state": "WATCHING", "error": str(issue), "last_outcome": "skipped"})
+            return
+        except AuditError:
+            self.metrics.record_check(
+                self.session_id,
+                "error",
+                config["model"],
+                image_bytes=len(image),
+                goal_hash=goal_hash,
+                error_code="audit_store",
+            )
+            self._write(
+                {
+                    "state": "WATCHING",
+                    "error": "The audit archive is unavailable, so no request was sent.",
+                    "last_outcome": "error",
+                }
+            )
             return
         except GeminiError as issue:
             self.metrics.record_check(
@@ -150,6 +170,9 @@ class GoalWatchDaemon:
             )
             self._write({"state": "WATCHING", "error": str(issue), "last_outcome": "error"})
             return
+        finally:
+            if audit is not None:
+                audit.close()
 
         now = utc_now()
         outcome = "off_goal" if decision.alert else "on_goal"

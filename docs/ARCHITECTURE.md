@@ -1,10 +1,10 @@
 # GoalWatch architecture
 
 GoalWatch is split into three deliberately small components. The systemd user
-service owns goal-source selection, scheduling, capture, Gemini requests, and
-metrics. The Omarchy plugin is the manual goal editor, integration control,
-status surface, and alert renderer. The optional Obsidian plugin only resolves
-note paths and inserts goal blocks.
+service owns goal-source selection, scheduling, capture, Gemini requests,
+request auditing, and metrics. The Omarchy plugin is the manual goal editor,
+integration control, audit browser, status surface, and alert renderer. The
+optional Obsidian plugin only resolves note paths and inserts goal blocks.
 
 ```text
 Manual goal ── private stdin ─────────────┐
@@ -14,8 +14,8 @@ Omarchy bar ── toggle/settings ───────────────
                                               ▼
                                    systemd user service
                               Markdown ──▶ goal parser
-                              grim ──────▶ JPEG in memory
-                              keyring ───▶ Gemini API
+                              grim ──────▶ JPEG ───▶ private audit archive
+                              keyring ───▶ Gemini API ───▶ raw response audit
                                               │
                               runtime JSON ◀──┴──▶ SQLite metrics
                                    │
@@ -29,12 +29,18 @@ Omarchy bar ── toggle/settings ───────────────
   dependencies. A monotonic one-shot interval prevents polling and request
   overlap.
 - `grim` is the only capture child process. It writes a scaled JPEG to stdout;
-  GoalWatch reads those bytes directly and never creates a screenshot file.
+  GoalWatch reads those bytes directly and stores them in the private request
+  audit before the network call.
   Every child process has a wall-clock deadline, byte-limited stdout/stderr,
   and an isolated process group that is killed as a unit on timeout or overflow.
 - Gemini receives one stateless `generateContent` request per due check. The
   response uses a JSON schema with exactly `alert` and `complement`. Response
   bodies are capped at 512 KiB and HTTP redirects are never followed.
+- The audit store owns a descriptor-anchored SQLite index plus one mode-`0600`
+  JPEG per request. A shared file lock spans each request and viewer query; the
+  explicit clear operation requires an exclusive lock and a stopped service.
+  Request persistence is a precondition for network I/O, while response
+  persistence is a precondition for an alert.
 - Quickshell watches an atomic runtime-state file. It never receives the API key
   and does not call Gemini itself. Dynamic runtime text is length-capped and
   rendered explicitly as plain text.
@@ -47,7 +53,7 @@ Omarchy bar ── toggle/settings ───────────────
   atomically installs the companion, preserves every unrelated community
   plugin entry, and only then changes the active source. Disabling changes the
   source first, then performs idempotent companion cleanup.
-- Config, runtime state, and metrics paths are anchored to no-follow directory
+- Config, runtime state, metrics, and audit paths are anchored to no-follow directory
   descriptors. Atomic replacements cannot traverse a substituted file symlink,
   and Markdown is read from one no-follow descriptor after size/type checks.
 
@@ -82,6 +88,7 @@ activity.
 - Optional Obsidian plugin: `<vault>/.obsidian/plugins/goalwatch`
 - Config: `${XDG_CONFIG_HOME:-~/.config}/goalwatch/config.json`
 - Metrics: `${XDG_STATE_HOME:-~/.local/state}/goalwatch/metrics.sqlite3`
+- Request audit: `${XDG_STATE_HOME:-~/.local/state}/goalwatch/audit/`
 - Ephemeral state: `${XDG_RUNTIME_DIR}/goalwatch/state.json`
 
 Nothing under `/usr/share/omarchy` is changed.

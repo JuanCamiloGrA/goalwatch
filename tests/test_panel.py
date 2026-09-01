@@ -40,6 +40,18 @@ class PanelReactivityTests(unittest.TestCase):
         self.assertIn("root.snapshot.error ||", self.source)
         self.assertGreaterEqual(self.source.count("textFormat: Text.PlainText"), 8)
 
+    def test_audit_browser_uses_stdin_filters_and_shows_capture_and_raw_response(self):
+        self.assertIn('command: ["goalwatch", "audit", "query"]', self.source)
+        self.assertIn('"query": String(auditSearchField.text || "").slice(0, 200)', self.source)
+        self.assertIn("auditQueryProc.payload", self.source)
+        self.assertIn("stdinEnabled: true", self.source)
+        self.assertNotIn('"audit", "query", auditSearchField', self.source)
+        self.assertIn("source: root.auditImageUrl(root.selectedAudit.image_path)", self.source)
+        self.assertIn("root.selectedAudit.raw_response", self.source)
+        self.assertIn('target: "com.goalwatch.audit"', self.source)
+        self.assertIn('{"label": "PENDING", "value": "pending"}', self.source)
+        self.assertIn('text: "REQUEST AUDIT"', self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

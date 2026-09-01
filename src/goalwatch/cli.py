@@ -10,6 +10,7 @@ from datetime import date
 from pathlib import Path
 
 from . import __version__
+from .audit import AuditError, AuditStore
 from .capture import capture_desktop
 from .config import (
     ConfigError,
@@ -30,7 +31,7 @@ from .obsidian import (
     enable_integration,
     integration_status,
 )
-from .paths import config_file, metrics_file, runtime_state_file
+from .paths import audit_file, config_file, metrics_file, runtime_state_file
 from .process import run_bounded
 from .secrets import SecretError, clear_api_key, get_api_key, has_api_key, set_api_key
 from .state import read_state, write_off_state, write_state
@@ -265,7 +266,8 @@ def command_run_once() -> int:
         print("No Gemini API key is set.", file=sys.stderr)
         return 1
     image = capture_desktop()
-    decision = GeminiClient(key, config["model"]).classify(goal, image)
+    with AuditStore() as audit:
+        decision = GeminiClient(key, config["model"]).classify(goal, image, audit=audit)
     emit({
         "alert": decision.alert,
         "complement": decision.complement,
@@ -275,6 +277,52 @@ def command_run_once() -> int:
         "output_tokens": decision.output_tokens,
     })
     return 0
+
+
+def command_audit(arguments: argparse.Namespace) -> int:
+    if arguments.audit_action == "query":
+        payload: object = {}
+        if not sys.stdin.isatty():
+            line = sys.stdin.readline().strip()
+            if line:
+                try:
+                    payload = json.loads(line)
+                except ValueError as error:
+                    raise AuditError("Audit query must be one JSON object.") from error
+        if not isinstance(payload, dict):
+            raise AuditError("Audit query must be one JSON object.")
+        try:
+            limit = int(payload.get("limit", 50))
+            offset = int(payload.get("offset", 0))
+        except (TypeError, ValueError) as error:
+            raise AuditError("Audit pagination values must be whole numbers.") from error
+        with AuditStore() as audit:
+            emit(
+                audit.query(
+                    outcome=str(payload.get("outcome") or "all"),
+                    query=str(payload.get("query") or ""),
+                    limit=limit,
+                    offset=offset,
+                )
+            )
+        return 0
+    if arguments.audit_action == "show":
+        with AuditStore() as audit:
+            record = audit.get(arguments.record_id)
+        if record is None:
+            raise AuditError("Audit record was not found.")
+        emit(record)
+        return 0
+    if arguments.audit_action == "clear":
+        if service_active():
+            raise AuditError("Stop GoalWatch before clearing its audit archive.")
+        if sys.stdin.isatty() or sys.stdin.readline().strip() != "CLEAR":
+            raise AuditError("Read the exact confirmation CLEAR from stdin.")
+        with AuditStore(exclusive=True) as audit:
+            count = audit.clear()
+        emit({"cleared": count})
+        return 0
+    return 2
 
 
 def command_obsidian(arguments: argparse.Namespace) -> int:
@@ -356,6 +404,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor")
     sub.add_parser("state-off", help=argparse.SUPPRESS)
 
+    audit = sub.add_parser("audit")
+    audit_sub = audit.add_subparsers(dest="audit_action", required=True)
+    audit_sub.add_parser("query")
+    audit_show = audit_sub.add_parser("show")
+    audit_show.add_argument("record_id", type=int)
+    audit_sub.add_parser("clear")
+
     paths = sub.add_parser("paths")
     paths.add_argument("--json", action="store_true")
 
@@ -422,6 +477,8 @@ def main(argv: list[str] | None = None) -> int:
             return command_run_once()
         if arguments.action == "doctor":
             return command_doctor()
+        if arguments.action == "audit":
+            return command_audit(arguments)
         if arguments.action == "state-off":
             write_off_state()
             refresh_off_state()
@@ -431,6 +488,7 @@ def main(argv: list[str] | None = None) -> int:
                 "config": str(config_file()),
                 "state": str(runtime_state_file()),
                 "metrics": str(metrics_file()),
+                "audit": str(audit_file()),
             })
             return 0
         if arguments.action == "metrics":

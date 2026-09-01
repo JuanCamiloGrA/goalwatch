@@ -52,7 +52,7 @@ if [[ $goalwatch_purge == true ]]; then
   secret-tool clear service goalwatch account gemini >/dev/null 2>&1 || true
   rm -rf -- "$goalwatch_config_home/goalwatch"
   rm -rf -- "${XDG_STATE_HOME:-$HOME/.local/state}/goalwatch"
-  echo "GoalWatch and its local configuration, secret, and metrics were removed."
+  echo "GoalWatch and its local configuration, secret, metrics, and request audit were removed."
 else
-  echo "GoalWatch was removed. Configuration, API key, and metrics were preserved."
+  echo "GoalWatch was removed. Configuration, API key, metrics, and request audit were preserved."
 fi

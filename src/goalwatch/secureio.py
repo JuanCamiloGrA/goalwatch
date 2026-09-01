@@ -53,9 +53,8 @@ def read_text_at(directory: int, name: str, *, limit: int) -> str:
         os.close(descriptor)
 
 
-def atomic_write_text_at(directory: int, name: str, content: str, *, mode: int = 0o600) -> None:
+def atomic_write_bytes_at(directory: int, name: str, content: bytes, *, mode: int = 0o600) -> None:
     target = _file_name(name)
-    encoded = content.encode("utf-8")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -72,7 +71,7 @@ def atomic_write_text_at(directory: int, name: str, content: str, *, mode: int =
         raise OSError("Could not allocate a secure temporary file.")
     try:
         with os.fdopen(descriptor, "wb", closefd=False) as handle:
-            handle.write(encoded)
+            handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, target, src_dir_fd=directory, dst_dir_fd=directory)
@@ -85,6 +84,10 @@ def atomic_write_text_at(directory: int, name: str, content: str, *, mode: int =
         raise
     finally:
         os.close(descriptor)
+
+
+def atomic_write_text_at(directory: int, name: str, content: str, *, mode: int = 0o600) -> None:
+    atomic_write_bytes_at(directory, name, content.encode("utf-8"), mode=mode)
 
 
 def open_lock_at(directory: int, name: str) -> int:

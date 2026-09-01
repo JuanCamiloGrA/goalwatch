@@ -5,7 +5,7 @@ from argparse import Namespace
 from contextlib import redirect_stderr
 from unittest.mock import patch
 
-from goalwatch.cli import build_parser, command_config
+from goalwatch.cli import build_parser, command_audit, command_config
 
 
 class CliPrivacyTests(unittest.TestCase):
@@ -26,6 +26,27 @@ class CliPrivacyTests(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue()), {"saved": True})
         self.assertNotIn("Private goal", output.getvalue())
         self.assertNotIn("Private tools", output.getvalue())
+
+    def test_audit_filter_accepts_no_private_argv_query(self):
+        parser = build_parser()
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["audit", "query", "private search"])
+
+    @patch("goalwatch.cli.AuditStore")
+    def test_audit_filter_is_read_from_stdin(self, store_type):
+        store = store_type.return_value.__enter__.return_value
+        store.query.return_value = {"total": 0, "limit": 50, "offset": 0, "records": []}
+        arguments = Namespace(audit_action="query")
+        output = io.StringIO()
+        payload = {"outcome": "error", "query": "private search", "limit": 50, "offset": 0}
+        with patch("sys.stdin", io.StringIO(json.dumps(payload) + "\n")), patch(
+            "sys.stdout", output
+        ):
+            self.assertEqual(command_audit(arguments), 0)
+        store.query.assert_called_once_with(
+            outcome="error", query="private search", limit=50, offset=0
+        )
+        self.assertNotIn("private search", output.getvalue())
 
 
 if __name__ == "__main__":

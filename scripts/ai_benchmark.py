@@ -11,6 +11,7 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(REPOSITORY / "src"))
 
+from goalwatch.audit import AuditStore  # noqa: E402
 from goalwatch.config import DEFAULT_CONFIG  # noqa: E402
 from goalwatch.gemini import GeminiClient, GeminiError  # noqa: E402
 from goalwatch.goals import Goal  # noqa: E402
@@ -42,32 +43,33 @@ def main() -> int:
     client = GeminiClient(key, args.model)
     true_positive = false_positive = true_negative = false_negative = errors = 0
     results = []
-    for case in cases:
-        identifier = str(case["id"])
-        expected = bool(case["expected_alert"])
-        image_path = (manifest_path.parent / str(case["image"])).resolve()
-        try:
-            decision = client.classify(goal, image_path.read_bytes())
-            actual = decision.alert
-            if expected and actual:
-                true_positive += 1
-            elif expected and not actual:
-                false_negative += 1
-            elif not expected and actual:
-                false_positive += 1
-            else:
-                true_negative += 1
-            results.append(
-                {
-                    "id": identifier,
-                    "expected_alert": expected,
-                    "actual_alert": actual,
-                    "latency_ms": decision.latency_ms,
-                }
-            )
-        except (GeminiError, OSError) as error:
-            errors += 1
-            results.append({"id": identifier, "error": str(error)})
+    with AuditStore() as audit:
+        for case in cases:
+            identifier = str(case["id"])
+            expected = bool(case["expected_alert"])
+            image_path = (manifest_path.parent / str(case["image"])).resolve()
+            try:
+                decision = client.classify(goal, image_path.read_bytes(), audit=audit)
+                actual = decision.alert
+                if expected and actual:
+                    true_positive += 1
+                elif expected and not actual:
+                    false_negative += 1
+                elif not expected and actual:
+                    false_positive += 1
+                else:
+                    true_negative += 1
+                results.append(
+                    {
+                        "id": identifier,
+                        "expected_alert": expected,
+                        "actual_alert": actual,
+                        "latency_ms": decision.latency_ms,
+                    }
+                )
+            except (GeminiError, OSError) as error:
+                errors += 1
+                results.append({"id": identifier, "error": str(error)})
 
     predicted_alerts = true_positive + false_positive
     negative_cases = true_negative + false_positive

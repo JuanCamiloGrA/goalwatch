@@ -44,6 +44,14 @@ def metrics_file() -> Path:
     return state_dir() / "metrics.sqlite3"
 
 
+def audit_dir() -> Path:
+    return state_dir() / "audit"
+
+
+def audit_file() -> Path:
+    return audit_dir() / "audit.sqlite3"
+
+
 def ensure_private_dir(path: Path) -> None:
     with directory_fd(path, create=True, private=True):
         pass

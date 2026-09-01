@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "com.goalwatch",
   "name": "GoalWatch",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "Juan Camilo Grisales Arias",
   "license": "MIT",
   "description": "A silent, screen-aware focus guard for Omarchy with optional Obsidian sync.",
@@ -17,7 +17,7 @@
   },
   "barWidget": {
     "displayName": "GoalWatch",
-    "description": "Toggle GoalWatch, inspect the current goal and configure the screen-aware focus guard.",
+    "description": "Toggle GoalWatch, inspect its request audit and configure the screen-aware focus guard.",
     "category": "Productivity",
     "allowMultiple": false,
     "defaultSection": "right",
