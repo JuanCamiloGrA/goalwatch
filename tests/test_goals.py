@@ -3,10 +3,26 @@ import unittest
 from pathlib import Path
 
 from goalwatch.config import DEFAULT_TOOLS
-from goalwatch.goals import GoalReadError, parse_latest_goal, read_latest_goal
+from goalwatch.goals import GoalReadError, parse_latest_goal, read_latest_goal, resolve_goal
 
 
 class GoalParserTests(unittest.TestCase):
+    def test_manual_source_needs_no_markdown_file(self):
+        goal = resolve_goal(
+            {
+                "goal_source": "manual",
+                "manual_goal": "Ship GoalWatch",
+                "manual_tools": "Codex and Browser",
+                "markdown_file": "",
+            }
+        )
+        self.assertEqual(goal.description, "Ship GoalWatch")
+        self.assertEqual(goal.tools, "Codex and Browser")
+
+    def test_empty_manual_source_skips_the_check(self):
+        self.assertIsNone(
+            resolve_goal({"goal_source": "manual", "manual_goal": "", "manual_tools": "Codex"})
+        )
     def test_latest_valid_goal_wins(self):
         result = parse_latest_goal(
             "> Current Goal: First\n>\n> Available Tools: One\n\n"

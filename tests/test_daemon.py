@@ -31,6 +31,17 @@ class DaemonDecisionTests(unittest.TestCase):
     def decision(self, alert, complement=""):
         return Decision(alert, complement, 45, 20, 3)
 
+    @patch("goalwatch.daemon.capture_desktop")
+    @patch("goalwatch.daemon.GeminiClient")
+    def test_empty_manual_goal_stays_idle(self, client, capture):
+        self.daemon._setup_state(
+            {"goal_source": "manual"}, None, "configured-key", "", 300
+        )
+        self.assertEqual(self.daemon.state["state"], "NO GOAL")
+        self.assertFalse(self.daemon.state["alert"]["active"])
+        capture.assert_not_called()
+        client.assert_not_called()
+
     @patch("goalwatch.daemon.capture_desktop", return_value=b"jpeg")
     @patch("goalwatch.daemon.GeminiClient")
     def test_on_goal_is_silent(self, client, _capture):

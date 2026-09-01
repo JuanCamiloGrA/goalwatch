@@ -11,22 +11,31 @@ from pathlib import Path
 
 from . import __version__
 from .capture import capture_desktop
-from .config import ConfigError, load_config, set_daily_file, set_manual_file, set_value
+from .config import (
+    ConfigError,
+    load_config,
+    set_daily_file,
+    set_manual_file,
+    set_manual_goal,
+    set_value,
+)
 from .daemon import run_daemon
 from .gemini import GeminiClient
-from .goals import read_latest_goal
+from .goals import resolve_goal
 from .metrics import Metrics
+from .obsidian import (
+    ObsidianError,
+    disable_integration,
+    discover_vaults,
+    enable_integration,
+    integration_status,
+)
 from .paths import config_file, metrics_file, runtime_state_file
 from .secrets import SecretError, clear_api_key, get_api_key, has_api_key, set_api_key
 from .state import read_state, write_off_state, write_state
 
 
 SERVICE = "goalwatch.service"
-OBSIDIAN_CONFIGS = (
-    "~/.config/obsidian/obsidian.json",
-    "~/.var/app/md.obsidian.Obsidian/config/obsidian.json",
-    "~/snap/obsidian/current/.config/obsidian/obsidian.json",
-)
 
 
 def emit(data: object) -> None:
@@ -75,9 +84,17 @@ def command_service(action: str) -> int:
 
 def public_config() -> dict:
     config = load_config()
+    obsidian = integration_status(config)
     return {
         "interval_minutes": config["interval_minutes"],
         "model": config["model"],
+        "goal_source": config["goal_source"],
+        "manual_goal": config["manual_goal"],
+        "manual_tools": config["manual_tools"],
+        "obsidian_enabled": config["obsidian_enabled"],
+        "obsidian_connected": obsidian["connected"],
+        "obsidian_vault": obsidian["vault"],
+        "obsidian_message": obsidian["message"],
         "markdown_file": config["markdown_file"],
         "markdown_source": config["markdown_source"],
         "daily_file": config["daily_file"],
@@ -101,6 +118,9 @@ def refresh_off_state() -> None:
             "active": False,
             "interval_minutes": config["interval_minutes"],
             "model": config["model"],
+            "goal_source": config["goal_source"],
+            "manual_goal": config["manual_goal"],
+            "manual_tools": config["manual_tools"],
             "markdown_file": config["markdown_file"],
             "markdown_source": config["markdown_source"],
             "api_key_set": key_set,
@@ -109,11 +129,30 @@ def refresh_off_state() -> None:
         }
     )
     try:
-        goal = read_latest_goal(config["markdown_file"], config["default_tools"])
+        goal = resolve_goal(config)
     except Exception:
         goal = None
     current["goal"] = goal.description if goal else ""
     current["tools"] = goal.tools if goal else ""
+    try:
+        obsidian = integration_status(config)
+        current.update(
+            {
+                "obsidian_enabled": config["obsidian_enabled"],
+                "obsidian_connected": obsidian["connected"],
+                "obsidian_vault": obsidian["vault"],
+                "obsidian_message": obsidian["message"],
+            }
+        )
+    except Exception:
+        current.update(
+            {
+                "obsidian_enabled": config["obsidian_enabled"],
+                "obsidian_connected": False,
+                "obsidian_vault": config["obsidian_vault"],
+                "obsidian_message": "Could not inspect the Obsidian integration.",
+            }
+        )
     write_state(current)
 
 
@@ -129,25 +168,7 @@ def status() -> dict:
 
 
 def obsidian_vaults() -> list[str]:
-    found: list[tuple[bool, int, str]] = []
-    for candidate in OBSIDIAN_CONFIGS:
-        path = Path(os.path.expanduser(candidate))
-        try:
-            entries = json.loads(path.read_text(encoding="utf-8")).get("vaults", {})
-        except (OSError, ValueError, AttributeError):
-            continue
-        for entry in entries.values():
-            if not isinstance(entry, dict) or not entry.get("path"):
-                continue
-            vault = os.path.abspath(os.path.expanduser(str(entry["path"])))
-            if Path(vault).is_dir():
-                found.append((bool(entry.get("open")), int(entry.get("ts") or 0), vault))
-    found.sort(reverse=True)
-    result: list[str] = []
-    for _open, _timestamp, vault in found:
-        if vault not in result:
-            result.append(vault)
-    return result
+    return [str(path) for path in discover_vaults()]
 
 
 def command_config(arguments: argparse.Namespace) -> int:
@@ -172,10 +193,26 @@ def command_config(arguments: argparse.Namespace) -> int:
         notify_reload()
         emit({"api_key_set": False})
         return 0
+    if arguments.config_action == "set-manual-goal":
+        if sys.stdin.isatty():
+            print("Read the goal payload from stdin; do not pass private text as arguments.", file=sys.stderr)
+            return 2
+        try:
+            payload = json.loads(sys.stdin.readline())
+        except (ValueError, OSError) as error:
+            raise ConfigError("Goal payload must be one JSON object.") from error
+        if not isinstance(payload, dict):
+            raise ConfigError("Goal payload must be one JSON object.")
+        set_manual_goal(payload.get("goal", ""), payload.get("tools", ""))
+        notify_reload()
+        emit({"saved": True})
+        return 0
     return 2
 
 
 def command_file(arguments: argparse.Namespace) -> int:
+    if not load_config()["obsidian_enabled"]:
+        raise ConfigError("Obsidian Sync is off. Enable it from the GoalWatch panel first.")
     if arguments.file_action == "current":
         if arguments.vault and arguments.file:
             relative = Path(arguments.file)
@@ -217,10 +254,10 @@ def command_dismiss() -> int:
 
 def command_run_once() -> int:
     config = load_config()
-    goal = read_latest_goal(config["markdown_file"], config["default_tools"])
+    goal = resolve_goal(config)
     key = get_api_key()
     if not goal:
-        print("No valid Current Goal block was found.", file=sys.stderr)
+        print("No Current Goal is set.", file=sys.stderr)
         return 1
     if not key:
         print("No Gemini API key is set.", file=sys.stderr)
@@ -235,6 +272,26 @@ def command_run_once() -> int:
         "prompt_tokens": decision.prompt_tokens,
         "output_tokens": decision.output_tokens,
     })
+    return 0
+
+
+def command_obsidian(arguments: argparse.Namespace) -> int:
+    if arguments.obsidian_action == "status":
+        emit(integration_status())
+        return 0
+    vaults = [Path(name).expanduser() for name in arguments.vault]
+    try:
+        if arguments.obsidian_action == "enable":
+            result = enable_integration(vaults or None)
+        else:
+            result = disable_integration(vaults or None)
+    except (ObsidianError, ConfigError, OSError) as error:
+        current = integration_status()
+        current.update({"ok": False, "error": str(error)})
+        emit(current)
+        return 1
+    notify_reload()
+    emit(result)
     return 0
 
 
@@ -306,6 +363,13 @@ def build_parser() -> argparse.ArgumentParser:
     obsidian = sub.add_parser("obsidian-vaults")
     obsidian.add_argument("--json", action="store_true")
 
+    obsidian_integration = sub.add_parser("obsidian")
+    obsidian_sub = obsidian_integration.add_subparsers(dest="obsidian_action", required=True)
+    obsidian_sub.add_parser("status")
+    for name in ("enable", "disable"):
+        action = obsidian_sub.add_parser(name)
+        action.add_argument("--vault", action="append", default=[])
+
     config = sub.add_parser("config")
     config_sub = config.add_subparsers(dest="config_action", required=True)
     config_sub.add_parser("show")
@@ -314,6 +378,7 @@ def build_parser() -> argparse.ArgumentParser:
     setting.add_argument("value")
     config_sub.add_parser("set-api-key")
     config_sub.add_parser("clear-api-key")
+    config_sub.add_parser("set-manual-goal")
 
     file_parser = sub.add_parser("file")
     file_sub = file_parser.add_subparsers(dest="file_action", required=True)
@@ -357,6 +422,7 @@ def main(argv: list[str] | None = None) -> int:
             return command_doctor()
         if arguments.action == "state-off":
             write_off_state()
+            refresh_off_state()
             return 0
         if arguments.action == "paths":
             emit({
@@ -375,6 +441,10 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.action == "obsidian-vaults":
             emit(obsidian_vaults())
             return 0
+        if arguments.action == "obsidian":
+            result = command_obsidian(arguments)
+            refresh_off_state()
+            return result
         if arguments.action == "config":
             result = command_config(arguments)
             refresh_off_state()

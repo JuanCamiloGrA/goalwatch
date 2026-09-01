@@ -6,7 +6,7 @@ kept narrow and explicit.
 ## Data sent to Gemini
 
 At each configured interval, and only when the service is enabled with a valid
-file, goal, and API key, GoalWatch sends:
+goal and API key, GoalWatch sends:
 
 - the current goal description;
 - the available-tools sentence from the goal block;
@@ -23,8 +23,10 @@ server.
 - Goal text and Gemini explanations are not stored in the metrics database.
 - The API key is never placed in configuration, arguments, runtime JSON,
   metrics, or logs.
+- Manual goal text is never placed in process arguments, metrics, or logs.
 
-The active goal and an alert explanation do temporarily exist in the private
+Manual goal text is stored in the private settings file so it survives a
+restart. The active goal and an alert explanation also temporarily exist in the private
 runtime-state file because Quickshell needs them. The explanation is removed
 when the alert is dismissed or the service stops. Runtime state is stored below
 the per-user runtime directory with mode `0600`.
@@ -49,3 +51,9 @@ and a SHA-256 fingerprint of the goal. Metrics are pruned after 90 days.
 
 Stop GoalWatch at any time from the eye button or with `goalwatch stop`. While it
 is off, it performs no capture and makes no Gemini request.
+
+Obsidian is not required and is never modified by a default installation.
+Turning on Obsidian Sync explicitly installs the companion into one local vault
+and adds only `goalwatch` to that vault's community plugin registry. Turning it
+off removes only that entry and directory; Markdown notes are never changed by
+the integration manager.

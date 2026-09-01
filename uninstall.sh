@@ -32,7 +32,11 @@ if command -v omarchy >/dev/null 2>&1; then
 fi
 
 if [[ $goalwatch_skip_obsidian == false ]]; then
-  python3 "$goalwatch_root/scripts/obsidian_plugin.py" uninstall "${goalwatch_vault_args[@]}" || true
+  if [[ -x $HOME/.local/bin/goalwatch ]]; then
+    "$HOME/.local/bin/goalwatch" obsidian disable "${goalwatch_vault_args[@]}" >/dev/null || true
+  else
+    python3 "$goalwatch_root/scripts/obsidian_plugin.py" uninstall "${goalwatch_vault_args[@]}" || true
+  fi
 fi
 
 rm -f -- "$goalwatch_config_home/systemd/user/goalwatch.service"

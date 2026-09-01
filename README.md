@@ -3,24 +3,25 @@
 </p>
 
 <p align="center">
-  <strong>A silent, screen-aware focus guard for Omarchy and Obsidian.</strong>
+  <strong>A silent, screen-aware focus guard for Omarchy.</strong>
 </p>
 
 GoalWatch runs as a small systemd user service. At a configurable interval it
-reads the latest goal from an Obsidian note, captures the visible Wayland
+reads the goal entered in its Omarchy panel, captures the visible Wayland
 desktop in memory, and asks Gemini whether the screen is useful to that goal.
 On-goal and ambiguous activity stay silent. A clear deviation opens a blocking
-intervention on every display.
+intervention on every display. No goal means no capture and no Gemini request.
 
 GoalWatch is Omarchy-first software, not a conventional desktop application.
-Its controls live in the Omarchy bar and its goal workflow lives in Obsidian.
+Its controls and default goal workflow live in the Omarchy bar. Obsidian Sync
+is an optional, one-tap integration.
 
 ## What ships
 
 - A Python standard-library daemon with no virtual environment or Python package dependencies.
 - A native Omarchy/Quickshell eye that toggles the service and exposes settings and status.
 - A full-screen, keyboard-exclusive alert that cannot be dismissed by Escape or an outside click.
-- An Obsidian plugin for Daily Notes, current-file selection, goal insertion, and `@goal` expansion.
+- Optional one-tap Obsidian Sync for Daily Notes, current-file selection, goal insertion, and `@goal` expansion.
 - Exact Gemini structured output with conservative classification and fail-open error handling.
 - Local, content-free metrics for focus score, checks, alerts, latency, usage, and return-to-goal time.
 - User-local install, update, and uninstall scripts. Nothing under `/usr/share/omarchy` is modified.
@@ -36,12 +37,13 @@ same canonical geometry at bar, panel, and alert sizes.
 ## How it works
 
 ```text
-Obsidian note ── goal/file path ──▶ GoalWatch CLI/config
+Manual goal ────────────────┐
+Optional Obsidian note ─────┴──────▶ GoalWatch CLI/config
                                            │
 Omarchy eye ── start/stop/settings ─────────┤
                                            ▼
                                  systemd user service
-                              Markdown  grim  Secret Service
+                            Goal source  grim  Secret Service
                                   └──── prompt + JPEG ────▶ Gemini
                                                             │
                              Quickshell overlay ◀── runtime state
@@ -57,7 +59,7 @@ locked session never create an alert.
 
 - Omarchy with its Quickshell bar and a Wayland session.
 - A systemd user session.
-- Obsidian desktop for the companion workflow; optional for a manually selected Markdown file.
+- Obsidian desktop only if you want the optional companion workflow.
 - A [Gemini API key](https://aistudio.google.com/api-keys).
 
 The installer supplies missing Arch packages for Python, `grim`, and
@@ -75,9 +77,10 @@ omarchy plugin add https://github.com/JuanCamiloGrA/goalwatch.git --yes
 Omarchy deliberately clones third-party plugins disabled and never runs install
 hooks. The second command is the explicit setup step for this hybrid plugin: it
 installs missing system packages through Omarchy, copies the Python runtime,
-adds the systemd user service, discovers and enables the Obsidian companion,
-validates and enables the bar widget, and preserves the Git checkout for future
-`omarchy plugin update` operations. GoalWatch remains off after a first install.
+adds the systemd user service, validates and enables the bar widget, and
+preserves the Git checkout for future `omarchy plugin update` operations. It
+does not install or modify Obsidian on a fresh install. An already-enabled
+companion is updated in place. GoalWatch remains off after a first install.
 
 If you are already working from a development checkout, run setup directly:
 
@@ -88,13 +91,13 @@ If you are already working from a development checkout, run setup directly:
 Useful installer options:
 
 ```bash
+./install.sh --with-obsidian
 ./install.sh --vault /absolute/path/to/vault
-./install.sh --vault /vault/one --vault /vault/two
-./install.sh --skip-obsidian
 ./install.sh --skip-packages
 ```
 
-Use `--vault` when Obsidian has not registered the intended vault.
+`--with-obsidian` opts into the companion during setup. `--vault` implies it and
+selects a specific vault when auto-detection is not appropriate.
 `--skip-packages` turns missing dependencies into an error instead of installing
 them.
 
@@ -112,16 +115,35 @@ For a development checkout, pull the repository and rerun `./install.sh`.
 
 ## First run
 
-1. Reload Obsidian once after installation.
-2. Open the gear beside the GoalWatch eye in the Omarchy bar.
+1. Open the gear beside the GoalWatch eye in the Omarchy bar.
+2. Enter a Current Goal and edit Available Tools if needed. Both auto-save.
 3. Enter a Gemini API key. The field replaces the stored key and never reveals it.
-4. Type `@goal` in a Markdown note or run **GoalWatch: Add goal**.
-5. Write the goal after `Current Goal:` and click the gray eye.
+4. Click the gray eye.
 
 The eye turns electric blue while the service is watching. No screenshot or
 request is made until the first full interval has elapsed.
 
-## Goal format
+## Goal sources
+
+Manual is the default and needs no note-taking application. Current Goal and
+Available Tools are ordinary text fields in the panel. Changes restart the full
+countdown, and an empty Current Goal suspends all captures and API calls.
+
+Turn on **Obsidian Sync** to use the most recently active local vault. One tap:
+
+- verifies that Obsidian and a local vault are available;
+- installs and enables only the GoalWatch companion in that vault;
+- switches the active source to Obsidian; and
+- preserves the manual goal as an immediate fallback.
+
+If Obsidian is missing, has never opened a vault, contains a stale vault entry,
+or has an unsafe plugin registry, activation fails with an actionable message
+and manual mode remains untouched. Turning the switch off is idempotent: it
+immediately returns to manual mode and removes the companion without modifying
+notes or other plugins. If Obsidian is already open and its CLI is disabled,
+the panel asks for one restart so Obsidian can load or unload the companion.
+
+### Obsidian goal format
 
 ```markdown
 > Current Goal: Finish the GoalWatch release
@@ -149,10 +171,12 @@ path on the next date resumes automatic daily-note following.
 | Interval | `5` minutes by default; accepts `1–1440` and restarts the countdown when changed. |
 | Model | `gemini-flash-lite-latest` by default; applied on the next check. |
 | API Key | Empty replacement field backed by Secret Service; double-click the label to open Google AI Studio. |
-| Markdown File | Daily path supplied by Obsidian or an absolute manual path. |
+| Obsidian Sync | Optional one-tap companion install/removal; off by default. |
+| Synced Markdown File | Daily path supplied by Obsidian or an absolute override, visible only while sync is on. |
 
 Changes save automatically. Invalid values remain unsaved and visible in the
-panel. When an alert is active, checks pause until **I’LL GET BACK TO WORK** is
+panel. Session durations and check countdowns update live while the panel is
+open. When an alert is active, checks pause until **I’LL GET BACK TO WORK** is
 pressed; acknowledgement starts a fresh countdown.
 
 ## Privacy and local data
@@ -182,12 +206,22 @@ goalwatch run-once              # one credentialed check now
 goalwatch dismiss               # recovery path for an active alert
 goalwatch doctor                # dependency and session diagnostics
 goalwatch config show           # public configuration; never the key
+goalwatch obsidian status       # optional integration state
+goalwatch obsidian enable       # detect, install, enable, and select one vault
+goalwatch obsidian disable      # switch to manual and remove the companion
 ```
 
 Set or replace the key through stdin so it never enters the process arguments:
 
 ```bash
 printf '%s\n' "$GEMINI_API_KEY" | goalwatch config set-api-key
+```
+
+The panel also sends manual goal edits through stdin. For scripting:
+
+```bash
+printf '%s\n' '{"goal":"Ship the release","tools":"Codex and Browser"}' \
+  | goalwatch config set-manual-goal
 ```
 
 Test the alert without taking a screenshot or spending API quota:
@@ -235,8 +269,7 @@ assets/                                canonical brand and UI previews
 ```
 
 Before contributing, read [AGENTS.md](AGENTS.md). Its constraints apply equally
-to human-written and AI-assisted changes. The full product contract is in
-[PLAN.md](PLAN.md), and measured acceptance results are in
+to human-written and AI-assisted changes. Measured acceptance results are in
 [docs/VERIFICATION.md](docs/VERIFICATION.md).
 
 ## Uninstall

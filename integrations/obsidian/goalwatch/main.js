@@ -125,8 +125,10 @@ class GoalWatchPlugin extends Plugin {
       this.lastDailyPath = daily.file;
       if (showNotice) new Notice(`GoalWatch now follows ${daily.file}`);
     } catch (error) {
-      console.error("GoalWatch: daily-note synchronization failed", error);
-      if (showNotice) new Notice(`GoalWatch could not use today's daily note: ${error.message}`);
+      if (showNotice) {
+        console.error("GoalWatch: daily-note synchronization failed", error);
+        new Notice(`GoalWatch could not use today's daily note: ${error.message}`);
+      }
     }
   }
 

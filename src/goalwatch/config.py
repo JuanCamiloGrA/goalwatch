@@ -15,9 +15,14 @@ from .paths import config_dir, config_file, config_lock_file, ensure_private_dir
 
 DEFAULT_TOOLS = "Codex, Browser, Obsidian and any tool useful to the goal."
 DEFAULT_CONFIG = {
-    "version": 1,
+    "version": 2,
     "interval_minutes": 5,
     "model": "gemini-flash-lite-latest",
+    "goal_source": "manual",
+    "manual_goal": "",
+    "manual_tools": DEFAULT_TOOLS,
+    "obsidian_enabled": False,
+    "obsidian_vault": "",
     "markdown_file": "",
     "markdown_source": "none",
     "daily_file": "",
@@ -47,6 +52,10 @@ def _normalized(raw: object) -> dict:
     model = str(data["model"] or "").strip()
     data["model"] = model or DEFAULT_CONFIG["model"]
     for key in (
+        "goal_source",
+        "manual_goal",
+        "manual_tools",
+        "obsidian_vault",
         "markdown_file",
         "markdown_source",
         "daily_file",
@@ -55,10 +64,30 @@ def _normalized(raw: object) -> dict:
         "default_tools",
     ):
         data[key] = str(data[key] or "")
+    legacy_markdown = (
+        isinstance(raw, dict)
+        and "goal_source" not in raw
+        and (
+            bool(str(raw.get("markdown_file") or "").strip())
+            or bool(str(raw.get("daily_file") or "").strip())
+            or str(raw.get("markdown_source") or "none") in {"daily", "manual"}
+        )
+    )
+    if data["goal_source"] not in {"manual", "obsidian"}:
+        data["goal_source"] = "manual"
+    if legacy_markdown:
+        data["goal_source"] = "obsidian"
+        data["obsidian_enabled"] = True
+    else:
+        data["obsidian_enabled"] = data["obsidian_enabled"] is True
+        data["goal_source"] = "obsidian" if data["obsidian_enabled"] else "manual"
+    data["manual_goal"] = data["manual_goal"].strip()
+    data["manual_tools"] = data["manual_tools"].strip() or DEFAULT_TOOLS
     if data["markdown_source"] not in {"none", "daily", "manual"}:
         data["markdown_source"] = "none"
     if not data["default_tools"].strip():
         data["default_tools"] = DEFAULT_TOOLS
+    data["version"] = DEFAULT_CONFIG["version"]
     return data
 
 
@@ -138,6 +167,38 @@ def set_value(name: str, value: str) -> dict:
     raise ConfigError(f"Unknown setting: {name}")
 
 
+def set_manual_goal(goal: str, tools: str) -> dict:
+    from .goals import MAX_GOAL_CHARS, MAX_TOOLS_CHARS
+
+    clean_goal = str(goal or "").strip()
+    clean_tools = str(tools or "").strip() or DEFAULT_TOOLS
+    if len(clean_goal) > MAX_GOAL_CHARS:
+        raise ConfigError(f"Current Goal must be at most {MAX_GOAL_CHARS} characters.")
+    if len(clean_tools) > MAX_TOOLS_CHARS:
+        raise ConfigError(f"Available Tools must be at most {MAX_TOOLS_CHARS} characters.")
+
+    return mutate_config(
+        lambda config: config.update(manual_goal=clean_goal, manual_tools=clean_tools)
+    )
+
+
+def set_obsidian_integration(enabled: bool, vault: str = "") -> dict:
+    clean_vault = ""
+    if vault.strip():
+        candidate = Path(os.path.abspath(os.path.expanduser(vault.strip()))).resolve()
+        if not candidate.is_dir() or not (candidate / ".obsidian").is_dir():
+            raise ConfigError(f"Not an Obsidian vault: {candidate}")
+        clean_vault = str(candidate)
+
+    def change(config: dict) -> None:
+        config["obsidian_enabled"] = bool(enabled)
+        config["goal_source"] = "obsidian" if enabled else "manual"
+        if clean_vault:
+            config["obsidian_vault"] = clean_vault
+
+    return mutate_config(change)
+
+
 def _absolute_markdown(path: str) -> str:
     clean = os.path.abspath(os.path.expanduser(path.strip())) if path.strip() else ""
     if clean and Path(clean).suffix.lower() != ".md":
@@ -153,6 +214,8 @@ def set_manual_file(path: str, override_date: str | None = None) -> dict:
         config["markdown_file"] = clean
         config["markdown_source"] = "manual" if clean else "none"
         config["manual_override_date"] = today if clean else ""
+        if clean and config.get("obsidian_enabled"):
+            config["goal_source"] = "obsidian"
 
     return mutate_config(change)
 
@@ -188,5 +251,7 @@ def set_daily_file(vault: str, relative_file: str, daily_date: str) -> dict:
             config["markdown_file"] = absolute
             config["markdown_source"] = "daily"
             config["manual_override_date"] = ""
+        if config.get("obsidian_enabled"):
+            config["goal_source"] = "obsidian"
 
     return mutate_config(change)

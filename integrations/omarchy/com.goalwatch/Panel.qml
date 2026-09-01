@@ -17,13 +17,20 @@ Panel {
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property color watchBlue: "#3A8DFF"
   readonly property color alertRed: "#FF4D4F"
+  readonly property color cardColor: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.045)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
   property var snapshot: ({})
   property var metrics: ({})
   property string saveError: ""
+  property string integrationNotice: ""
   property bool alertActive: false
   property bool effectiveActive: false
+  property bool effectiveObsidian: false
+  property bool syncingFields: false
+  property bool manualSaveQueued: false
+  property int pendingObsidianAction: 0
+  readonly property double nowMs: liveClock.date.getTime()
   readonly property string statusText: snapshot.state === undefined ? "OFF" : String(snapshot.state)
   readonly property color eyeColor: alertActive ? alertRed : (effectiveActive ? watchBlue : dim)
 
@@ -32,8 +39,9 @@ Panel {
       var parsed = JSON.parse(String(content || "{}"))
       snapshot = parsed && typeof parsed === "object" ? parsed : ({})
       metrics = parsed && parsed.metrics && typeof parsed.metrics === "object" ? parsed.metrics : ({})
-      alertActive = parsed && parsed.alert && parsed.alert.active === true ? true : false
-      effectiveActive = parsed && parsed.active === true ? true : false
+      alertActive = parsed && parsed.alert && parsed.alert.active === true
+      effectiveActive = parsed && parsed.active === true
+      effectiveObsidian = parsed && parsed.obsidian_enabled === true
       syncFields()
     } catch (e) {
       console.warn("GoalWatch: ignoring invalid runtime state", e)
@@ -41,18 +49,98 @@ Panel {
   }
 
   function syncFields() {
+    syncingFields = true
     if (intervalField && !intervalField.activeFocus)
       intervalField.text = String(snapshot.interval_minutes || 5)
     if (modelField && !modelField.activeFocus)
       modelField.text = String(snapshot.model || "gemini-flash-lite-latest")
     if (pathField && !pathField.activeFocus)
       pathField.text = String(snapshot.markdown_file || "")
+    if (goalField && !goalField.activeFocus)
+      goalField.text = String(snapshot.manual_goal || "")
+    if (toolsField && !toolsField.activeFocus)
+      toolsField.text = String(snapshot.manual_tools || "Codex, Browser, Obsidian and any tool useful to the goal.")
+    syncingFields = false
   }
 
   function toggleWatching() {
     if (toggleProc.running) return
     effectiveActive = !effectiveActive
     toggleProc.running = true
+  }
+
+  function saveManualGoal() {
+    if (syncingFields || effectiveObsidian) return
+    if (manualGoalProc.running) {
+      manualSaveQueued = true
+      return
+    }
+    var goal = String(goalField.text || "").trim()
+    var tools = String(toolsField.text || "").trim()
+    if (goal === String(snapshot.manual_goal || "") && tools === String(snapshot.manual_tools || "")) {
+      manualSaveQueued = false
+      if (pendingObsidianAction !== 0) {
+        var unchangedAction = pendingObsidianAction
+        pendingObsidianAction = 0
+        startObsidian(unchangedAction > 0)
+      }
+      return
+    }
+    if (goal.length > 2000 || tools.length > 3000) {
+      saveError = "Current Goal or Available Tools is too long."
+      pendingObsidianAction = 0
+      return
+    }
+    saveError = ""
+    integrationNotice = ""
+    manualSaveQueued = false
+    manualGoalProc.payload = JSON.stringify({"goal": goal, "tools": tools})
+    manualGoalProc.running = true
+  }
+
+  function toggleObsidian() {
+    runObsidian(!effectiveObsidian)
+  }
+
+  function runObsidian(enable) {
+    if (obsidianProc.running) return
+    if (enable) {
+      saveManualGoalTimer.stop()
+      pendingObsidianAction = 1
+      saveManualGoal()
+      if (manualGoalProc.running || pendingObsidianAction === 0) return
+    }
+    startObsidian(enable)
+  }
+
+  function startObsidian(enable) {
+    if (obsidianProc.running) return
+    effectiveObsidian = enable
+    saveError = ""
+    integrationNotice = enable ? "Connecting to Obsidian…" : "Disconnecting from Obsidian…"
+    obsidianProc.enabling = enable
+    obsidianProc.responseSeen = false
+    obsidianProc.command = ["goalwatch", "obsidian", enable ? "enable" : "disable"]
+    obsidianProc.running = true
+  }
+
+  function handleObsidianResponse(content) {
+    try {
+      var response = JSON.parse(String(content || "{}"))
+      obsidianProc.responseSeen = true
+      if (response.ok === true) {
+        saveError = ""
+        integrationNotice = String(response.message || "Obsidian Sync updated.")
+        if (Array.isArray(response.warnings) && response.warnings.length > 0)
+          integrationNotice += " " + String(response.warnings[0])
+      } else {
+        effectiveObsidian = snapshot.obsidian_enabled === true
+        integrationNotice = ""
+        saveError = String(response.error || "Could not update Obsidian Sync.")
+      }
+    } catch (e) {
+      console.warn("GoalWatch: could not parse Obsidian response", e)
+    }
   }
 
   function saveInterval() {
@@ -101,30 +189,28 @@ Panel {
   }
 
   function humanDuration(seconds) {
-    var value = Math.max(0, Number(seconds || 0))
+    var value = Math.floor(Math.max(0, Number(seconds || 0)))
     if (value < 60) return value + "s"
     var minutes = Math.floor(value / 60)
-    if (minutes < 60) return minutes + "m"
+    if (minutes < 60) return minutes + "m " + (value % 60) + "s"
     return Math.floor(minutes / 60) + "h " + (minutes % 60) + "m"
   }
 
-  function since(iso) {
+  function since(iso, currentTimeMs) {
     if (!iso) return "—"
     var timestamp = Date.parse(String(iso))
     if (!isFinite(timestamp)) return "—"
-    return humanDuration(Math.floor((Date.now() - timestamp) / 1000))
+    return humanDuration(Math.floor((currentTimeMs - timestamp) / 1000))
   }
 
-  function until(iso) {
+  function until(iso, currentTimeMs) {
     if (!iso) return "—"
     var timestamp = Date.parse(String(iso))
     if (!isFinite(timestamp)) return "—"
-    return humanDuration(Math.max(0, Math.ceil((timestamp - Date.now()) / 1000)))
+    return humanDuration(Math.max(0, Math.ceil((timestamp - currentTimeMs) / 1000)))
   }
 
-  function refreshState() {
-    stateFile.reload()
-  }
+  function refreshState() { stateFile.reload() }
 
   onOpenedChanged: if (opened) {
     refreshState()
@@ -146,8 +232,50 @@ Panel {
     command: ["goalwatch", "toggle"]
     onExited: function(exitCode) {
       if (exitCode !== 0) {
-        root.effectiveActive = root.snapshot.active === true ? true : false
+        root.effectiveActive = root.snapshot.active === true
         root.saveError = "Could not toggle GoalWatch."
+      }
+      settleTimer.restart()
+    }
+  }
+
+  Process {
+    id: manualGoalProc
+    property string payload: ""
+    command: ["goalwatch", "config", "set-manual-goal"]
+    stdinEnabled: true
+    onStarted: write(payload + "\n")
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        root.saveError = "Could not save the manual goal."
+        root.pendingObsidianAction = 0
+      } else if (root.manualSaveQueued) {
+        saveManualGoalTimer.restart()
+      } else if (root.pendingObsidianAction !== 0) {
+        var action = root.pendingObsidianAction
+        root.pendingObsidianAction = 0
+        Qt.callLater(function() { root.startObsidian(action > 0) })
+      }
+      payload = ""
+      settleTimer.restart()
+    }
+  }
+
+  Process {
+    id: obsidianProc
+    property bool enabling: false
+    property bool responseSeen: false
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.handleObsidianResponse(text)
+    }
+    onExited: function(exitCode) {
+      if (exitCode !== 0 && !responseSeen) {
+        root.effectiveObsidian = root.snapshot.obsidian_enabled === true
+        root.integrationNotice = ""
+        root.saveError = enabling
+          ? "Could not connect Obsidian. Manual goals are still available."
+          : "Could not disconnect Obsidian."
       }
       settleTimer.restart()
     }
@@ -182,9 +310,7 @@ Panel {
     property string secret: ""
     command: ["goalwatch", "config", "set-api-key"]
     stdinEnabled: true
-    onStarted: {
-      write(secret + "\n")
-    }
+    onStarted: write(secret + "\n")
     onExited: function(exitCode) {
       if (exitCode === 0) apiKeyField.text = ""
       else root.saveError = "Could not save the API key."
@@ -194,20 +320,23 @@ Panel {
   }
 
   Timer {
+    id: saveManualGoalTimer
+    interval: 650
+    repeat: false
+    onTriggered: root.saveManualGoal()
+  }
+
+  Timer {
     id: settleTimer
     interval: 420
     repeat: false
     onTriggered: root.refreshState()
   }
 
-  Timer {
-    interval: 1000
-    repeat: true
-    running: root.opened
-    onTriggered: timeTick.tick += 1
+  SystemClock {
+    id: liveClock
+    precision: SystemClock.Seconds
   }
-
-  QtObject { id: timeTick; property int tick: 0 }
 
   implicitWidth: buttons.implicitWidth
   implicitHeight: buttons.implicitHeight
@@ -218,7 +347,6 @@ Panel {
     columns: root.bar && root.bar.vertical ? 1 : 2
 
     BarIconButton {
-      id: eyeButton
       bar: root.bar
       tooltipText: "GoalWatch · " + root.statusText
       iconComponent: Component {
@@ -253,13 +381,14 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(390))
-    contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(650))
+    contentWidth: panel.fittedContentWidth(Style.space(420))
+    contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(720))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: intervalField.activeFocus || modelField.activeFocus || pathField.activeFocus || apiKeyField.activeFocus
+      blocked: intervalField.activeFocus || modelField.activeFocus || pathField.activeFocus
+        || apiKeyField.activeFocus || goalField.activeFocus || toolsField.activeFocus
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
@@ -303,7 +432,6 @@ Panel {
               anchors.rightMargin: Style.space(12)
               anchors.verticalCenter: parent.verticalCenter
               spacing: Style.space(2)
-
               Text {
                 width: parent.width
                 text: "GoalWatch"
@@ -321,7 +449,6 @@ Panel {
                 font.pixelSize: Style.font.caption
                 font.bold: true
                 font.letterSpacing: 1.2
-                elide: Text.ElideRight
               }
             }
 
@@ -338,14 +465,165 @@ Panel {
           }
 
           PanelSeparator { width: parent.width; foreground: root.foreground }
+          PanelSectionHeader { text: "GOAL SOURCE"; foreground: root.foreground; fontFamily: root.fontFamily }
+
+          Rectangle {
+            width: parent.width
+            height: sourceContent.implicitHeight + Style.space(20)
+            radius: 5
+            color: root.cardColor
+
+            RowLayout {
+              id: sourceContent
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.margins: Style.space(10)
+              spacing: Style.space(10)
+
+              Column {
+                Layout.fillWidth: true
+                spacing: Style.space(3)
+                Text {
+                  text: "OBSIDIAN SYNC"
+                  color: root.effectiveObsidian ? root.watchBlue : root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                  font.letterSpacing: 0.8
+                }
+                Text {
+                  width: parent.width
+                  text: root.effectiveObsidian
+                    ? String(root.snapshot.obsidian_message || "Connected to Obsidian.")
+                    : "Off · Manual goal is active"
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
+              }
+
+              Rectangle {
+                visible: root.effectiveObsidian && root.snapshot.obsidian_connected !== true && !obsidianProc.running
+                Layout.preferredWidth: repairText.implicitWidth + Style.space(18)
+                Layout.preferredHeight: Style.space(28)
+                radius: 4
+                color: "transparent"
+                border.width: 1
+                border.color: root.watchBlue
+                Text {
+                  id: repairText
+                  anchors.centerIn: parent
+                  text: "REPAIR"
+                  color: root.watchBlue
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                }
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.runObsidian(true)
+                }
+              }
+
+              ToggleSwitch {
+                Layout.preferredWidth: Style.space(42)
+                checked: root.effectiveObsidian
+                busy: obsidianProc.running
+                foreground: root.foreground
+                onToggled: root.toggleObsidian()
+              }
+            }
+          }
 
           Column {
+            visible: !root.effectiveObsidian
+            width: parent.width
+            spacing: Style.space(6)
+            Text {
+              text: "CURRENT GOAL"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 0.8
+            }
+            TextArea {
+              id: goalField
+              width: parent.width
+              height: Style.space(82)
+              color: root.foreground
+              selectionColor: root.watchBlue
+              selectedTextColor: "white"
+              placeholderText: "What outcome are you working toward?"
+              placeholderTextColor: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              wrapMode: TextEdit.Wrap
+              padding: Style.space(10)
+              background: Rectangle {
+                radius: 4
+                color: root.cardColor
+                border.width: goalField.activeFocus ? 1 : 0
+                border.color: root.watchBlue
+              }
+              onTextChanged: if (activeFocus && !root.syncingFields) {
+                root.manualSaveQueued = true
+                saveManualGoalTimer.restart()
+              }
+              onActiveFocusChanged: if (!activeFocus) root.saveManualGoal()
+            }
+          }
+
+          Column {
+            visible: !root.effectiveObsidian
+            width: parent.width
+            spacing: Style.space(6)
+            Text {
+              text: "AVAILABLE TOOLS"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 0.8
+            }
+            TextArea {
+              id: toolsField
+              width: parent.width
+              height: Style.space(66)
+              color: root.foreground
+              selectionColor: root.watchBlue
+              selectedTextColor: "white"
+              placeholderText: "Codex, Browser, and any tool useful to the goal."
+              placeholderTextColor: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: TextEdit.Wrap
+              padding: Style.space(10)
+              background: Rectangle {
+                radius: 4
+                color: root.cardColor
+                border.width: toolsField.activeFocus ? 1 : 0
+                border.color: root.watchBlue
+              }
+              onTextChanged: if (activeFocus && !root.syncingFields) {
+                root.manualSaveQueued = true
+                saveManualGoalTimer.restart()
+              }
+              onActiveFocusChanged: if (!activeFocus) root.saveManualGoal()
+            }
+          }
+
+          Column {
+            visible: root.effectiveObsidian
             width: parent.width
             spacing: Style.space(5)
             PanelSectionHeader { text: "CURRENT GOAL"; foreground: root.foreground; fontFamily: root.fontFamily }
             Text {
               width: parent.width
-              text: String(root.snapshot.goal || "No current goal found.")
+              text: String(root.snapshot.goal || "No Current Goal block found yet.")
               color: root.snapshot.goal ? root.foreground : root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
@@ -356,12 +634,32 @@ Panel {
             }
             Text {
               width: parent.width
-              text: String(root.snapshot.markdown_source || "none").toUpperCase() + " · " + String(root.snapshot.markdown_file || "No Markdown file")
+              text: String(root.snapshot.markdown_file || "Waiting for Obsidian to select a note")
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               elide: Text.ElideMiddle
             }
+          }
+
+          Text {
+            visible: root.integrationNotice !== ""
+            width: parent.width
+            text: root.integrationNotice
+            color: root.watchBlue
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            visible: root.saveError !== "" || String(root.snapshot.error || "") !== ""
+            width: parent.width
+            text: root.saveError || String(root.snapshot.error || "")
+            color: root.saveError ? root.alertRed : root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
           }
 
           PanelSeparator { width: parent.width; foreground: root.foreground }
@@ -372,16 +670,14 @@ Panel {
             columns: 2
             columnSpacing: Style.space(10)
             rowSpacing: Style.space(8)
-
             MetricCell { title: "FOCUS SCORE"; value: String(root.metrics.focus_score || 0) + "%" }
-            MetricCell { title: "WATCHING"; value: root.effectiveActive ? root.since(root.metrics.session_started_at) : "—" }
+            MetricCell { title: "WATCHING"; value: root.effectiveActive ? root.since(root.metrics.session_started_at, root.nowMs) : "—" }
             MetricCell { title: "CHECKS TODAY"; value: String(root.metrics.checks_today || 0) }
             MetricCell { title: "ALERTS TODAY"; value: String(root.metrics.alerts_today || 0) }
-            MetricCell { title: "ON-GOAL STREAK"; value: root.effectiveActive ? root.since(root.metrics.streak_started_at) : "—" }
-            MetricCell { title: "LAST CHECK"; value: root.since(root.snapshot.last_check_at) }
-            MetricCell { title: "NEXT CHECK"; value: root.until(root.snapshot.next_check_at) }
+            MetricCell { title: "ON-GOAL STREAK"; value: root.effectiveActive ? root.since(root.metrics.streak_started_at, root.nowMs) : "—" }
+            MetricCell { title: "LAST CHECK"; value: root.since(root.snapshot.last_check_at, root.nowMs) }
+            MetricCell { title: "NEXT CHECK"; value: root.until(root.snapshot.next_check_at, root.nowMs) }
             MetricCell { title: "RETURN TIME"; value: root.metrics.average_return_seconds ? root.humanDuration(root.metrics.average_return_seconds) : "—" }
-            MetricCell { title: "API LATENCY"; value: root.metrics.median_latency_ms ? String(root.metrics.median_latency_ms) + " ms" : "—" }
           }
 
           PanelSeparator { width: parent.width; foreground: root.foreground }
@@ -448,9 +744,10 @@ Panel {
           }
 
           Column {
+            visible: root.effectiveObsidian
             width: parent.width
             spacing: Style.space(5)
-            Text { text: "Markdown File"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+            Text { text: "Synced Markdown File"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
             TextField {
               id: pathField
               width: parent.width
@@ -460,16 +757,6 @@ Panel {
               onAccepted: { root.savePath(); keyCatcher.forceActiveFocus() }
               onActiveFocusChanged: if (!activeFocus) root.savePath()
             }
-          }
-
-          Text {
-            visible: root.saveError !== "" || String(root.snapshot.error || "") !== ""
-            width: parent.width
-            text: root.saveError || String(root.snapshot.error || "")
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
           }
 
           Text {
@@ -493,9 +780,8 @@ Panel {
     property string value: "—"
     Layout.fillWidth: true
     implicitHeight: metricContent.implicitHeight + Style.space(16)
-    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.045)
+    color: root.cardColor
     radius: 4
-
     Column {
       id: metricContent
       anchors.left: parent.left

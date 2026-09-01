@@ -1,12 +1,14 @@
 # GoalWatch architecture
 
 GoalWatch is split into three deliberately small components. The systemd user
-service owns scheduling, capture, Gemini requests, and metrics. The Omarchy
-plugin is only a control/status surface and alert renderer. The Obsidian plugin
-only resolves note paths and inserts goal blocks.
+service owns goal-source selection, scheduling, capture, Gemini requests, and
+metrics. The Omarchy plugin is the manual goal editor, integration control,
+status surface, and alert renderer. The optional Obsidian plugin only resolves
+note paths and inserts goal blocks.
 
 ```text
-Obsidian ── vault-relative note path ──▶ goalwatch CLI
+Manual goal ── private stdin ─────────────┐
+Optional Obsidian ── note path ───────────┴──▶ goalwatch CLI
                                               │
 Omarchy bar ── toggle/settings ───────────────┤
                                               ▼
@@ -32,8 +34,15 @@ Omarchy bar ── toggle/settings ───────────────
   response uses a JSON schema with exactly `alert` and `complement`.
 - Quickshell watches an atomic runtime-state file. It never receives the API key
   and does not call Gemini itself.
+- Manual goal text is written to the CLI over stdin, never argv. It is stored
+  only in the private mode-`0600` config and ephemeral runtime state.
 - Obsidian invokes the CLI with an argument array, never a shell command. Note
-  paths are resolved inside the vault before being accepted.
+  paths are resolved inside the vault before being accepted. The core rejects
+  stale companion calls whenever Obsidian Sync is off.
+- Enabling Obsidian Sync chooses the most recent valid registered vault,
+  atomically installs the companion, preserves every unrelated community
+  plugin entry, and only then changes the active source. Disabling changes the
+  source first, then performs idempotent companion cleanup.
 
 ## State machine
 
@@ -63,7 +72,7 @@ activity.
 - CLI: `~/.local/bin/goalwatch`
 - systemd unit: `~/.config/systemd/user/goalwatch.service`
 - Omarchy plugin: `~/.config/omarchy/plugins/com.goalwatch`
-- Obsidian plugin: `<vault>/.obsidian/plugins/goalwatch`
+- Optional Obsidian plugin: `<vault>/.obsidian/plugins/goalwatch`
 - Config: `${XDG_CONFIG_HOME:-~/.config}/goalwatch/config.json`
 - Metrics: `${XDG_STATE_HOME:-~/.local/state}/goalwatch/metrics.sqlite3`
 - Ephemeral state: `${XDG_RUNTIME_DIR}/goalwatch/state.json`

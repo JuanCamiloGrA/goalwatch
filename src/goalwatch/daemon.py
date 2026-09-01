@@ -9,8 +9,9 @@ from datetime import datetime, timedelta, timezone
 from .capture import CaptureError, capture_desktop
 from .config import load_config
 from .gemini import GeminiClient, GeminiError
-from .goals import Goal, GoalReadError, read_latest_goal
+from .goals import Goal, GoalReadError, resolve_goal
 from .metrics import Metrics
+from .obsidian import integration_status
 from .schedule import IntervalSchedule
 from .secrets import SecretError, get_api_key
 from .state import BASE_STATE, write_off_state, write_state
@@ -56,7 +57,15 @@ class GoalWatchDaemon:
         self.wake.set()
 
     def _configuration_state(self, config: dict, goal: Goal | None, key_set: bool) -> dict:
+        obsidian = integration_status(config)
         return {
+            "goal_source": config["goal_source"],
+            "manual_goal": config["manual_goal"],
+            "manual_tools": config["manual_tools"],
+            "obsidian_enabled": config["obsidian_enabled"],
+            "obsidian_connected": obsidian["connected"],
+            "obsidian_vault": obsidian["vault"],
+            "obsidian_message": obsidian["message"],
             "markdown_file": config["markdown_file"],
             "markdown_source": config["markdown_source"],
             "interval_minutes": config["interval_minutes"],
@@ -76,7 +85,7 @@ class GoalWatchDaemon:
         goal = None
         error = ""
         try:
-            goal = read_latest_goal(config["markdown_file"], config["default_tools"])
+            goal = resolve_goal(config)
         except GoalReadError as issue:
             error = str(issue)
         try:
@@ -90,10 +99,14 @@ class GoalWatchDaemon:
     def _setup_state(self, config: dict, goal: Goal | None, key: str, error: str, remaining: float) -> None:
         if error:
             label = "SETUP REQUIRED"
-        elif not config["markdown_file"]:
-            label, error = "SETUP REQUIRED", "Choose a Markdown file."
         elif not goal:
-            label, error = "NO GOAL", "No valid Current Goal block was found."
+            if config["goal_source"] == "obsidian" and not config["markdown_file"]:
+                error = "Obsidian has not selected a note yet."
+            elif config["goal_source"] == "obsidian":
+                error = "No valid Current Goal block was found."
+            else:
+                error = "Enter a Current Goal."
+            label = "NO GOAL"
         elif not key:
             label, error = "SETUP REQUIRED", "Add a Gemini API key."
         else:
@@ -228,7 +241,7 @@ class GoalWatchDaemon:
                     continue
 
                 config, goal, key, error = self._load_inputs()
-                if error or not config["markdown_file"] or not goal or not key:
+                if error or not goal or not key:
                     schedule.reset(config["interval_minutes"])
                     self._setup_state(config, goal, key, error, schedule.remaining())
                     continue

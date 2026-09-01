@@ -5,7 +5,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from goalwatch.config import ConfigError, load_config, set_daily_file, set_manual_file, set_value
+from goalwatch.config import (
+    ConfigError,
+    load_config,
+    set_daily_file,
+    set_manual_file,
+    set_manual_goal,
+    set_obsidian_integration,
+    set_value,
+)
 
 
 class ConfigTests(unittest.TestCase):
@@ -22,6 +30,49 @@ class ConfigTests(unittest.TestCase):
         config = load_config()
         self.assertEqual(config["interval_minutes"], 5)
         self.assertEqual(config["model"], "gemini-flash-lite-latest")
+        self.assertEqual(config["goal_source"], "manual")
+        self.assertFalse(config["obsidian_enabled"])
+        self.assertEqual(config["manual_goal"], "")
+
+    def test_legacy_markdown_install_migrates_without_losing_source(self):
+        path = Path(self.temporary.name) / "goalwatch" / "config.json"
+        path.parent.mkdir()
+        path.write_text(
+            json.dumps({"version": 1, "markdown_file": "/vault/daily.md", "markdown_source": "daily"}),
+            encoding="utf-8",
+        )
+        config = load_config()
+        self.assertEqual(config["goal_source"], "obsidian")
+        self.assertTrue(config["obsidian_enabled"])
+        self.assertEqual(config["markdown_file"], "/vault/daily.md")
+
+    def test_source_and_integration_cannot_normalize_to_conflicting_states(self):
+        path = Path(self.temporary.name) / "goalwatch" / "config.json"
+        path.parent.mkdir()
+        path.write_text(
+            json.dumps({"version": 2, "goal_source": "obsidian", "obsidian_enabled": False}),
+            encoding="utf-8",
+        )
+        self.assertEqual(load_config()["goal_source"], "manual")
+
+    def test_manual_goal_is_private_and_bounded(self):
+        config = set_manual_goal(" Ship the release ", " Codex, Browser ")
+        self.assertEqual(config["manual_goal"], "Ship the release")
+        self.assertEqual(config["manual_tools"], "Codex, Browser")
+        path = Path(self.temporary.name) / "goalwatch" / "config.json"
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        with self.assertRaises(ConfigError):
+            set_manual_goal("x" * 2001, "Codex")
+
+    def test_disabling_obsidian_selects_manual_goal_without_erasing_it(self):
+        vault = Path(self.temporary.name) / "vault"
+        (vault / ".obsidian").mkdir(parents=True)
+        set_manual_goal("Fallback goal", "Codex")
+        set_obsidian_integration(True, str(vault))
+        config = set_obsidian_integration(False)
+        self.assertEqual(config["goal_source"], "manual")
+        self.assertFalse(config["obsidian_enabled"])
+        self.assertEqual(config["manual_goal"], "Fallback goal")
 
     def test_interval_validation_and_permissions(self):
         config = set_value("interval_minutes", "7")

@@ -70,3 +70,18 @@ def read_latest_goal(path: str, default_tools: str = DEFAULT_TOOLS) -> Goal | No
     except OSError as error:
         raise GoalReadError("Markdown file could not be read.") from error
     return parse_latest_goal(text, default_tools)
+
+
+def resolve_goal(config: dict) -> Goal | None:
+    if config.get("goal_source") == "manual":
+        description = str(config.get("manual_goal") or "").strip()
+        tools = str(config.get("manual_tools") or "").strip() or DEFAULT_TOOLS
+        if not description:
+            return None
+        if len(description) > MAX_GOAL_CHARS or len(tools) > MAX_TOOLS_CHARS:
+            return None
+        return Goal(description=description, tools=tools)
+    return read_latest_goal(
+        str(config.get("markdown_file") or ""),
+        str(config.get("default_tools") or DEFAULT_TOOLS),
+    )

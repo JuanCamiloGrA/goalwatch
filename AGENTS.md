@@ -20,7 +20,7 @@ These rules apply to human and AI-assisted contributions throughout the reposito
 
 ## Make focused changes
 
-- Read `README.md`, `PLAN.md`, and the nearest component files before editing behavior.
+- Read `README.md` and the nearest component files before editing behavior.
 - Preserve unrelated work in the tree. Do not run destructive Git commands or broad formatting passes.
 - Update tests and the relevant documentation when behavior, data flow, installation, UI copy, or defaults change.
 - Do not commit secrets, local configuration, logs, databases, caches, temporary captures, or generated QA artifacts.

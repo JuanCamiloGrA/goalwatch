@@ -10,11 +10,18 @@ from .paths import ensure_private_dir, runtime_state_file
 
 
 BASE_STATE = {
-    "version": 1,
+    "version": 2,
     "state": "OFF",
     "active": False,
     "goal": "",
     "tools": "",
+    "goal_source": "manual",
+    "manual_goal": "",
+    "manual_tools": "",
+    "obsidian_enabled": False,
+    "obsidian_connected": False,
+    "obsidian_vault": "",
+    "obsidian_message": "",
     "markdown_file": "",
     "markdown_source": "none",
     "interval_minutes": 5,

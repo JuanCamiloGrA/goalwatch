@@ -10,10 +10,13 @@ goalwatch_bin="$HOME/.local/bin/goalwatch"
 goalwatch_unit="$goalwatch_config_home/systemd/user/goalwatch.service"
 goalwatch_plugin="$goalwatch_config_home/omarchy/plugins/com.goalwatch"
 goalwatch_doc="$goalwatch_data_home/doc/goalwatch"
+goalwatch_with_obsidian=false
 goalwatch_skip_obsidian=false
+goalwatch_obsidian_explicit=false
 goalwatch_skip_packages=false
 goalwatch_vault_args=()
 goalwatch_obsidian_failed=false
+goalwatch_obsidian_ready=false
 
 usage() {
   cat <<'EOF'
@@ -22,8 +25,9 @@ Usage: ./install.sh [options]
 Installs GoalWatch for the current Omarchy user.
 
 Options:
-  --vault PATH       Install the Obsidian plugin into this vault (repeatable).
-  --skip-obsidian    Do not install the Obsidian companion plugin.
+  --with-obsidian    Connect the most recent registered Obsidian vault.
+  --vault PATH       Connect this Obsidian vault (implies --with-obsidian).
+  --skip-obsidian    Skip updating an already-connected Obsidian companion.
   --skip-packages    Do not install missing Arch packages; fail instead.
   -h, --help         Show this help.
 EOF
@@ -34,9 +38,17 @@ while (( $# > 0 )); do
     --vault)
       [[ $# -ge 2 ]] || { echo "--vault requires a path" >&2; exit 2; }
       goalwatch_vault_args+=(--vault "$2")
+      goalwatch_with_obsidian=true
+      goalwatch_obsidian_explicit=true
       shift 2
       ;;
+    --with-obsidian)
+      goalwatch_with_obsidian=true
+      goalwatch_obsidian_explicit=true
+      shift
+      ;;
     --skip-obsidian)
+      goalwatch_with_obsidian=false
       goalwatch_skip_obsidian=true
       shift
       ;;
@@ -106,6 +118,7 @@ cleanup() {
 trap cleanup EXIT
 
 cp -a "$goalwatch_root/src/goalwatch" "$goalwatch_stage/goalwatch"
+cp -a "$goalwatch_root/integrations/obsidian/goalwatch" "$goalwatch_stage/goalwatch/_obsidian"
 if [[ -d $goalwatch_app ]]; then
   mv -- "$goalwatch_app" "$goalwatch_backup"
 fi
@@ -131,7 +144,6 @@ if [[ $(realpath -m "$goalwatch_root") != $(realpath -m "$goalwatch_plugin") ]];
 fi
 
 install -m 644 "$goalwatch_root/README.md" "$goalwatch_doc/README.md"
-install -m 644 "$goalwatch_root/PLAN.md" "$goalwatch_doc/PLAN.md"
 install -m 644 "$goalwatch_root/LICENSE" "$goalwatch_doc/LICENSE"
 if [[ -d $goalwatch_root/docs ]]; then
   rm -rf -- "$goalwatch_doc/docs"
@@ -159,14 +171,22 @@ then
   omarchy plugin enable com.goalwatch --section right
 fi
 
-if [[ $goalwatch_skip_obsidian == false ]]; then
-  if ! python3 "$goalwatch_root/scripts/obsidian_plugin.py" install \
-      --source "$goalwatch_root/integrations/obsidian/goalwatch" "${goalwatch_vault_args[@]}"; then
-    echo "GoalWatch itself is installed, but no Obsidian vault was available." >&2
-    echo "Open/create a vault and rerun: ./install.sh --vault /path/to/vault" >&2
-    if (( ${#goalwatch_vault_args[@]} > 0 )); then
+if [[ $goalwatch_skip_obsidian == false && $goalwatch_with_obsidian == false ]]; then
+  if "$goalwatch_bin" obsidian status \
+      | python3 -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("enabled") is True else 1)'; then
+    goalwatch_with_obsidian=true
+  fi
+fi
+
+if [[ $goalwatch_with_obsidian == true ]]; then
+  if ! "$goalwatch_bin" obsidian enable "${goalwatch_vault_args[@]}"; then
+    echo "GoalWatch itself is installed, but Obsidian Sync could not be enabled." >&2
+    echo "Open/create a local vault and use the one-tap switch in the GoalWatch panel." >&2
+    if [[ $goalwatch_obsidian_explicit == true ]]; then
       goalwatch_obsidian_failed=true
     fi
+  else
+    goalwatch_obsidian_ready=true
   fi
 fi
 
@@ -186,7 +206,11 @@ if [[ $goalwatch_was_active == true ]]; then
 else
   echo "The service is off until you click the eye."
 fi
-echo "Reload Obsidian once to load or update its plugin."
+if [[ $goalwatch_obsidian_ready == true ]]; then
+  echo "Obsidian Sync is configured. Follow any reload note shown above."
+else
+  echo "Obsidian Sync is optional and can be connected from the panel with one tap."
+fi
 
 if [[ $goalwatch_obsidian_failed == true ]]; then
   exit 1
