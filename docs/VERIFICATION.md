@@ -6,7 +6,7 @@ Verified on 2026-09-01 with Omarchy 4.0.2, Quickshell 0.3.1, and Python 3.14.
 
 | Check | Result | Budget |
 |---|---:|---:|
-| Executable install size, including both plugins | 135,321 bytes | < 1 MiB |
+| Executable install size, including both plugins | 139,572 bytes | < 1 MiB |
 | Sleeping daemon CPU over 60 seconds | 0.15% | <= 0.5% |
 | Maximum daemon RSS during that sample | 28,184 KiB | <= 30 MiB |
 | Real desktop capture | 145,758 bytes, 1920×1080, 69 ms | <= 1920 px long edge, < 8 MiB |
@@ -21,18 +21,21 @@ process while sleeping.
 
 ## Automated checks
 
-- 48 Python unit/integration tests pass.
+- 59 Python unit/integration tests pass.
 - Node-based Obsidian tests pass for daily-note resolution, canonical goal
   insertion, and `@goal` replacement.
 - Gemini tests use a local HTTP server and cover alert true/false, exact schema,
   extra fields, semantic mismatch, HTTP 429, network failure, usage metadata,
-  and image-size rejection.
+  image-size rejection, response-size enforcement, and redirect rejection.
 - Goal parsing covers latest-valid selection, malformed tails, default tools,
   CRLF, Unicode, symlinks, invalid UTF-8, path escape, and input bounds.
 - Scheduler tests use a fake monotonic clock for interval reset, a large resume
   jump without a backlog, and alert-dismiss reset.
 - Metrics tests cover focus score, latency, recovery linking, current streak,
-  retention pruning, and cascade deletion.
+  retention pruning, cascade deletion, and symlink refusal.
+- Security regressions cover bounded child output, deadline/process-group
+  cleanup, descriptor-relative config/state writes, private-directory symlink
+  refusal, and plain-text bounded QML rendering.
 - Shell syntax, JavaScript syntax, JSON manifests, Omarchy plugin validation,
   and systemd unit verification pass.
 - The repository-root marketplace manifest and packaged runtime manifest both
@@ -60,6 +63,8 @@ Run them with:
 - Re-running the default installer updated an already-authorized Obsidian
   companion to 0.2.0 without requiring `--with-obsidian` again.
 - The fresh Quickshell process loaded GoalWatch without GoalWatch QML warnings.
+- A literal HTML-like goal and explanation rendered visibly as plain text; no
+  markup, image, or local-file interpretation occurred.
 - Gray idle eye, blue active state, settings panel, charcoal intervention,
   canonical eye, exact English alert copy, and dismissal path were visually inspected.
 - A synthetic alert created one `goalwatch-alert` overlay-layer surface per
@@ -73,12 +78,19 @@ Run them with:
 
 ## Credentialed Gemini acceptance
 
-The live model-quality benchmark was not executed as part of release QA so the
-verification process would not spend user API quota or capture the user's
-desktop. No test key was invented or exposed. The repository includes eight
-non-sensitive, labelled synthetic screens and `./scripts/ai_benchmark.py`; when
-run explicitly, it reports precision and false-alert rate using the configured
-model.
+The eight-case live benchmark was authorized and run against
+`gemini-flash-lite-latest` using the stored key and non-sensitive synthetic
+screens. Six cases returned decisions and all six were correct: three on-goal
+cases stayed silent and three off-goal cases alerted, for 100% observed
+precision and a 0% observed false-alert rate. Two cases remained inconclusive
+after targeted retries because Gemini returned HTTP 503. GoalWatch failed open
+in each case, so no error could become an alert, but the complete eight-case
+model-quality gate is not recorded as passing. No desktop capture was used and
+the key was never printed.
+
+The reproducible command is `./scripts/ai_benchmark.py`; it reports per-case
+latency, precision, false-alert rate, and upstream errors without retaining
+model responses.
 
 The client follows Google's current `generateContent` authentication and inline
 image contract and uses `responseJsonSchema`, then independently validates the

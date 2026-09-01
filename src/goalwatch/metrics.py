@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import statistics
+import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .paths import ensure_private_dir, metrics_file, state_dir
+from .paths import metrics_file
+from .secureio import directory_fd
 
 
 SCHEMA = """
@@ -48,18 +51,39 @@ def utc_now() -> str:
 class Metrics:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or metrics_file()
-        ensure_private_dir(self.path.parent)
-        self.connection = sqlite3.connect(self.path, timeout=5)
-        self.connection.row_factory = sqlite3.Row
-        self.connection.executescript(SCHEMA)
-        self.connection.commit()
+        self._directory = directory_fd(self.path.parent, create=True, private=True)
+        self._directory_fd = self._directory.__enter__()
         try:
-            self.path.chmod(0o600)
-        except OSError:
-            pass
+            for name in (self.path.name, f"{self.path.name}-wal", f"{self.path.name}-shm"):
+                try:
+                    info = os.stat(name, dir_fd=self._directory_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    raise OSError(f"Refusing unsafe metrics path: {name}")
+            descriptor_path = f"/proc/self/fd/{self._directory_fd}/{self.path.name}"
+            self.connection = sqlite3.connect(descriptor_path, timeout=5)
+        except BaseException:
+            self._directory.__exit__(None, None, None)
+            raise
+        try:
+            self.connection.row_factory = sqlite3.Row
+            self.connection.executescript(SCHEMA)
+            self.connection.commit()
+            os.chmod(
+                self.path.name,
+                0o600,
+                dir_fd=self._directory_fd,
+                follow_symlinks=False,
+            )
+        except BaseException:
+            self.connection.close()
+            self._directory.__exit__(None, None, None)
+            raise
 
     def close(self) -> None:
         self.connection.close()
+        self._directory.__exit__(None, None, None)
 
     def start_session(self) -> int:
         cursor = self.connection.execute(
@@ -216,8 +240,12 @@ class Metrics:
 
 def reset_metrics(path: Path | None = None) -> None:
     target = path or metrics_file()
-    for candidate in (target, Path(str(target) + "-wal"), Path(str(target) + "-shm")):
-        try:
-            candidate.unlink()
-        except FileNotFoundError:
-            pass
+    try:
+        with directory_fd(target.parent, create=False, private=True) as directory:
+            for name in (target.name, f"{target.name}-wal", f"{target.name}-shm"):
+                try:
+                    os.unlink(name, dir_fd=directory)
+                except FileNotFoundError:
+                    pass
+    except FileNotFoundError:
+        pass

@@ -119,6 +119,8 @@ trap cleanup EXIT
 
 cp -a "$goalwatch_root/src/goalwatch" "$goalwatch_stage/goalwatch"
 cp -a "$goalwatch_root/integrations/obsidian/goalwatch" "$goalwatch_stage/goalwatch/_obsidian"
+find "$goalwatch_stage/goalwatch" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+find "$goalwatch_stage/goalwatch" -depth -type d -name '__pycache__' -empty -delete
 if [[ -d $goalwatch_app ]]; then
   mv -- "$goalwatch_app" "$goalwatch_backup"
 fi

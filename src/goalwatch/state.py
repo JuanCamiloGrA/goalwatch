@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from copy import deepcopy
 from pathlib import Path
 
-from .paths import ensure_private_dir, runtime_state_file
+from .paths import runtime_state_file
+from .secureio import atomic_write_text_at, directory_fd, read_text_at
 
 
 BASE_STATE = {
@@ -34,41 +33,30 @@ BASE_STATE = {
     "alert": {"active": False, "complement": "", "shown_at": ""},
     "metrics": {},
 }
+MAX_STATE_BYTES = 1024 * 1024
 
 
 def write_state(data: dict, path: Path | None = None) -> dict:
     target = path or runtime_state_file()
-    ensure_private_dir(target.parent)
     merged = deepcopy(BASE_STATE)
     merged.update(data)
     if not isinstance(merged.get("alert"), dict):
         merged["alert"] = deepcopy(BASE_STATE["alert"])
     if not isinstance(merged.get("metrics"), dict):
         merged["metrics"] = {}
-    fd, temporary = tempfile.mkstemp(prefix=".state-", suffix=".tmp", dir=target.parent)
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(merged, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, target)
-        target.chmod(0o600)
-    except BaseException:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-        raise
+    content = json.dumps(merged, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    if len(content.encode("utf-8")) > MAX_STATE_BYTES:
+        raise OSError("Runtime state exceeded its size limit.")
+    with directory_fd(target.parent, create=True, private=True) as directory:
+        atomic_write_text_at(directory, target.name, content)
     return merged
 
 
 def read_state(path: Path | None = None) -> dict:
     target = path or runtime_state_file()
     try:
-        with target.open("r", encoding="utf-8") as handle:
-            parsed = json.load(handle)
+        with directory_fd(target.parent, create=False, private=True) as directory:
+            parsed = json.loads(read_text_at(directory, target.name, limit=MAX_STATE_BYTES))
         if isinstance(parsed, dict):
             merged = deepcopy(BASE_STATE)
             merged.update(parsed)

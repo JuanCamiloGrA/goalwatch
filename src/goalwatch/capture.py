@@ -5,6 +5,8 @@ import math
 import shutil
 import subprocess
 
+from .process import ProcessOutputLimitError, run_bounded
+
 
 MAX_LONG_EDGE = 1920
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -19,8 +21,8 @@ def _session_locked() -> bool:
     if not checker:
         return False
     try:
-        result = subprocess.run(
-            [checker], capture_output=True, timeout=2, check=False
+        result = run_bounded(
+            [checker], timeout=2, stdout_limit=4096, stderr_limit=4096
         )
         return result.returncode == 0
     except (OSError, subprocess.SubprocessError):
@@ -32,12 +34,12 @@ def _monitors() -> list[dict]:
     if not hyprctl:
         return []
     try:
-        result = subprocess.run(
+        result = run_bounded(
             [hyprctl, "monitors", "-j"],
-            capture_output=True,
-            text=True,
             timeout=3,
-            check=False,
+            stdout_limit=1024 * 1024,
+            stderr_limit=64 * 1024,
+            text=True,
         )
         parsed = json.loads(result.stdout) if result.returncode == 0 else []
         return parsed if isinstance(parsed, list) else []
@@ -98,7 +100,14 @@ def _jpeg_size(data: bytes) -> tuple[int, int]:
 def _run_grim(grim: str, scale: float) -> bytes:
     command = [grim, "-s", f"{scale:.3f}", "-t", "jpeg", "-q", "65", "-"]
     try:
-        result = subprocess.run(command, capture_output=True, timeout=10, check=False)
+        result = run_bounded(
+            command,
+            timeout=10,
+            stdout_limit=MAX_IMAGE_BYTES,
+            stderr_limit=64 * 1024,
+        )
+    except ProcessOutputLimitError as error:
+        raise CaptureError("Desktop capture exceeded the request-size guard.") from error
     except (OSError, subprocess.SubprocessError) as error:
         raise CaptureError("Desktop capture failed.") from error
     if result.returncode != 0 or not result.stdout:

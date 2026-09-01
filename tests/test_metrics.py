@@ -7,6 +7,16 @@ from goalwatch.metrics import Metrics
 
 
 class MetricsTests(unittest.TestCase):
+    def test_symlinked_database_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outside = root / "outside"
+            outside.write_text("keep", encoding="utf-8")
+            (root / "metrics.sqlite3").symlink_to(outside)
+            with self.assertRaisesRegex(OSError, "unsafe metrics path"):
+                Metrics(root / "metrics.sqlite3")
+            self.assertEqual(outside.read_text(encoding="utf-8"), "keep")
+
     def test_summary_and_alert_lifecycle(self):
         with tempfile.TemporaryDirectory() as directory:
             metrics = Metrics(Path(directory) / "metrics.sqlite3")

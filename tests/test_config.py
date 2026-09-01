@@ -82,6 +82,26 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             set_value("interval_minutes", "0")
 
+    def test_config_symlink_is_replaced_without_touching_its_target(self):
+        app = Path(self.temporary.name) / "goalwatch"
+        app.mkdir()
+        outside = Path(self.temporary.name) / "outside.json"
+        outside.write_text('{"keep":true}\n', encoding="utf-8")
+        (app / "config.json").symlink_to(outside)
+        config = set_value("interval_minutes", "9")
+        self.assertEqual(config["interval_minutes"], 9)
+        self.assertEqual(outside.read_text(encoding="utf-8"), '{"keep":true}\n')
+        self.assertFalse((app / "config.json").is_symlink())
+
+    def test_symlinked_private_config_directory_is_refused(self):
+        outside = Path(self.temporary.name) / "outside"
+        outside.mkdir()
+        (Path(self.temporary.name) / "goalwatch").symlink_to(outside, target_is_directory=True)
+        self.assertEqual(load_config()["manual_goal"], "")
+        with self.assertRaises(OSError):
+            set_value("interval_minutes", "9")
+        self.assertEqual(list(outside.iterdir()), [])
+
     def test_manual_override_survives_same_daily_then_expires(self):
         vault = Path(self.temporary.name) / "vault"
         vault.mkdir()

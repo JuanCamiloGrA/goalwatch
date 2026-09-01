@@ -14,6 +14,7 @@ from .goals import Goal
 
 DEFAULT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 MAX_COMPLEMENT = 700
+MAX_RESPONSE_BYTES = 512 * 1024
 
 
 PROMPT = """You are GoalWatch, a conservative screen-activity classifier.
@@ -51,6 +52,25 @@ class GeminiError(RuntimeError):
     def __init__(self, message: str, code: str = "gemini_error") -> None:
         super().__init__(message)
         self.code = code
+
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _read_bounded(response, limit: int) -> bytes:
+    length = response.headers.get("Content-Length")
+    try:
+        declared = int(length) if length is not None else None
+    except (TypeError, ValueError):
+        declared = None
+    if declared is not None and declared > limit:
+        raise GeminiError("Gemini returned an excessive response.", "response_size")
+    body = response.read(limit + 1)
+    if len(body) > limit:
+        raise GeminiError("Gemini returned an excessive response.", "response_size")
+    return body
 
 
 @dataclass(frozen=True)
@@ -105,11 +125,17 @@ class GeminiClient:
         )
         started = time.monotonic()
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                body = response.read()
+            opener = urllib.request.build_opener(_NoRedirects())
+            with opener.open(request, timeout=self.timeout) as response:
+                body = _read_bounded(response, MAX_RESPONSE_BYTES)
         except urllib.error.HTTPError as error:
-            code = "rate_limited" if error.code == 429 else f"http_{error.code}"
+            if 300 <= error.code < 400:
+                code = "redirect_rejected"
+            else:
+                code = "rate_limited" if error.code == 429 else f"http_{error.code}"
             raise GeminiError("Gemini request was rejected.", code) from error
+        except GeminiError:
+            raise
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             raise GeminiError("Gemini request failed.", "network") from error
         latency = round((time.monotonic() - started) * 1000)

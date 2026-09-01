@@ -31,7 +31,7 @@ Panel {
   property bool manualSaveQueued: false
   property int pendingObsidianAction: 0
   readonly property double nowMs: liveClock.date.getTime()
-  readonly property string statusText: snapshot.state === undefined ? "OFF" : String(snapshot.state)
+  readonly property string statusText: snapshot.state === undefined ? "OFF" : bounded(snapshot.state, 40)
   readonly property color eyeColor: alertActive ? alertRed : (effectiveActive ? watchBlue : dim)
 
   function parseState(content) {
@@ -48,18 +48,22 @@ Panel {
     }
   }
 
+  function bounded(value, limit) {
+    return String(value === undefined || value === null ? "" : value).slice(0, limit)
+  }
+
   function syncFields() {
     syncingFields = true
     if (intervalField && !intervalField.activeFocus)
       intervalField.text = String(snapshot.interval_minutes || 5)
     if (modelField && !modelField.activeFocus)
-      modelField.text = String(snapshot.model || "gemini-flash-lite-latest")
+      modelField.text = bounded(snapshot.model || "gemini-flash-lite-latest", 160)
     if (pathField && !pathField.activeFocus)
-      pathField.text = String(snapshot.markdown_file || "")
+      pathField.text = bounded(snapshot.markdown_file || "", 4096)
     if (goalField && !goalField.activeFocus)
-      goalField.text = String(snapshot.manual_goal || "")
+      goalField.text = bounded(snapshot.manual_goal || "", 2000)
     if (toolsField && !toolsField.activeFocus)
-      toolsField.text = String(snapshot.manual_tools || "Codex, Browser, Obsidian and any tool useful to the goal.")
+      toolsField.text = bounded(snapshot.manual_tools || "Codex, Browser, Obsidian and any tool useful to the goal.", 3000)
     syncingFields = false
   }
 
@@ -444,6 +448,7 @@ Panel {
               Text {
                 width: parent.width
                 text: root.statusText
+                textFormat: Text.PlainText
                 color: root.alertActive ? root.alertRed : (root.effectiveActive ? root.watchBlue : root.dim)
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -495,8 +500,9 @@ Panel {
                 Text {
                   width: parent.width
                   text: root.effectiveObsidian
-                    ? String(root.snapshot.obsidian_message || "Connected to Obsidian.")
+                    ? root.bounded(root.snapshot.obsidian_message || "Connected to Obsidian.", 600)
                     : "Off · Manual goal is active"
+                  textFormat: Text.PlainText
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
@@ -562,6 +568,7 @@ Panel {
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
               wrapMode: TextEdit.Wrap
+              textFormat: TextEdit.PlainText
               padding: Style.space(10)
               background: Rectangle {
                 radius: 4
@@ -601,6 +608,7 @@ Panel {
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: TextEdit.Wrap
+              textFormat: TextEdit.PlainText
               padding: Style.space(10)
               background: Rectangle {
                 radius: 4
@@ -623,7 +631,8 @@ Panel {
             PanelSectionHeader { text: "CURRENT GOAL"; foreground: root.foreground; fontFamily: root.fontFamily }
             Text {
               width: parent.width
-              text: String(root.snapshot.goal || "No Current Goal block found yet.")
+              text: root.bounded(root.snapshot.goal || "No Current Goal block found yet.", 2000)
+              textFormat: Text.PlainText
               color: root.snapshot.goal ? root.foreground : root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
@@ -634,7 +643,8 @@ Panel {
             }
             Text {
               width: parent.width
-              text: String(root.snapshot.markdown_file || "Waiting for Obsidian to select a note")
+              text: root.bounded(root.snapshot.markdown_file || "Waiting for Obsidian to select a note", 4096)
+              textFormat: Text.PlainText
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -645,7 +655,8 @@ Panel {
           Text {
             visible: root.integrationNotice !== ""
             width: parent.width
-            text: root.integrationNotice
+            text: root.bounded(root.integrationNotice, 600)
+            textFormat: Text.PlainText
             color: root.watchBlue
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -655,7 +666,8 @@ Panel {
           Text {
             visible: root.saveError !== "" || String(root.snapshot.error || "") !== ""
             width: parent.width
-            text: root.saveError || String(root.snapshot.error || "")
+            text: root.bounded(root.saveError || root.snapshot.error || "", 600)
+            textFormat: Text.PlainText
             color: root.saveError ? root.alertRed : root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -791,7 +803,8 @@ Panel {
       spacing: Style.space(2)
       Text {
         width: parent.width
-        text: title
+        text: root.bounded(title, 80)
+        textFormat: Text.PlainText
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
@@ -800,7 +813,8 @@ Panel {
       }
       Text {
         width: parent.width
-        text: value
+        text: root.bounded(value, 120)
+        textFormat: Text.PlainText
         color: root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.body

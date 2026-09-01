@@ -3,6 +3,8 @@ from __future__ import annotations
 import shutil
 import subprocess
 
+from .process import run_bounded
+
 
 ATTRIBUTES = ["service", "goalwatch", "account", "gemini"]
 
@@ -20,12 +22,12 @@ def _tool() -> str:
 
 def get_api_key() -> str:
     try:
-        result = subprocess.run(
+        result = run_bounded(
             [_tool(), "lookup", *ATTRIBUTES],
-            capture_output=True,
-            text=True,
             timeout=8,
-            check=False,
+            stdout_limit=1024,
+            stderr_limit=32 * 1024,
+            text=True,
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise SecretError("Could not read the API key from Secret Service.") from error
@@ -43,13 +45,13 @@ def set_api_key(value: str) -> None:
     if len(key) < 16 or len(key) > 512 or any(ch.isspace() for ch in key):
         raise SecretError("API key is not valid.")
     try:
-        result = subprocess.run(
+        result = run_bounded(
             [_tool(), "store", "--label=GoalWatch Gemini API key", *ATTRIBUTES],
-            input=key + "\n",
-            capture_output=True,
-            text=True,
+            input_data=key + "\n",
             timeout=15,
-            check=False,
+            stdout_limit=32 * 1024,
+            stderr_limit=32 * 1024,
+            text=True,
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise SecretError("Could not save the API key to Secret Service.") from error
@@ -59,12 +61,12 @@ def set_api_key(value: str) -> None:
 
 def clear_api_key() -> None:
     try:
-        subprocess.run(
+        run_bounded(
             [_tool(), "clear", *ATTRIBUTES],
-            capture_output=True,
-            text=True,
             timeout=8,
-            check=False,
+            stdout_limit=32 * 1024,
+            stderr_limit=32 * 1024,
+            text=True,
         )
     except (OSError, subprocess.SubprocessError):
         pass

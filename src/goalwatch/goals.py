@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import errno
+import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,6 +14,7 @@ GOAL_RE = re.compile(r"^\s*>\s*Current Goal:\s*(?P<goal>.+?)\s*$", re.IGNORECASE
 TOOLS_RE = re.compile(r"^\s*>\s*Available Tools:\s*(?P<tools>.+?)\s*$", re.IGNORECASE)
 MAX_GOAL_CHARS = 2_000
 MAX_TOOLS_CHARS = 3_000
+MAX_MARKDOWN_BYTES = 10 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -59,15 +63,28 @@ def read_latest_goal(path: str, default_tools: str = DEFAULT_TOOLS) -> Goal | No
     if not path:
         return None
     target = Path(path).expanduser()
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
     try:
-        if target.is_symlink() or not target.is_file():
+        descriptor = os.open(target, flags)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            os.close(descriptor)
             return None
-        if target.stat().st_size > 10 * 1024 * 1024:
+        if info.st_size > MAX_MARKDOWN_BYTES:
+            os.close(descriptor)
             raise GoalReadError("Markdown file is larger than 10 MiB.")
-        text = target.read_text(encoding="utf-8")
+        with os.fdopen(descriptor, "rb") as handle:
+            content = handle.read(MAX_MARKDOWN_BYTES + 1)
+        if len(content) > MAX_MARKDOWN_BYTES:
+            raise GoalReadError("Markdown file is larger than 10 MiB.")
+        text = content.decode("utf-8")
     except UnicodeDecodeError as error:
         raise GoalReadError("Markdown file is not valid UTF-8.") from error
     except OSError as error:
+        if error.errno == errno.ELOOP:
+            return None
         raise GoalReadError("Markdown file could not be read.") from error
     return parse_latest_goal(text, default_tools)
 

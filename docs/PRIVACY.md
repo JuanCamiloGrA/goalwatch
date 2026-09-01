@@ -37,17 +37,27 @@ The Gemini API key is stored through the desktop Secret Service. Non-secret
 settings are saved in a mode-`0600` JSON file. The local SQLite database stores
 only timestamps, outcomes, model name, latency, token/byte counts, error codes,
 and a SHA-256 fingerprint of the goal. Metrics are pruned after 90 days.
+Private application directories are opened with `O_NOFOLLOW`; config and
+runtime-state reads/writes are descriptor-relative and atomic. Markdown is read
+from a single no-follow file descriptor, preventing a path swap between its
+type/size checks and content read.
 
 ## Safety behavior
 
 - GoalWatch skips capture when the Omarchy session is locked or displays are off.
 - Captures are scaled to a maximum 1920-pixel long edge and rejected above 8 MiB.
+- `grim`, `hyprctl`, `secret-tool`, systemd, and Obsidian CLI subprocesses have
+  hard stdout/stderr limits, total deadlines, and process-group cleanup.
+- Gemini response bodies are capped at 512 KiB. Redirects are rejected, so the
+  API-key header is never replayed to a redirect target.
 - Screenshot text is labelled as untrusted content in the Gemini instruction to
   reduce prompt-injection risk.
 - The model must return the exact structured schema. The local client validates
   it again before allowing an alert.
 - All failures are silent: an error can never be converted into an invasive
   intervention.
+- Goal and explanation strings are capped and rendered as plain text in
+  Quickshell.
 
 Stop GoalWatch at any time from the eye button or with `goalwatch stop`. While it
 is off, it performs no capture and makes no Gemini request.

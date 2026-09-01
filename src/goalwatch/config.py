@@ -3,17 +3,18 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import tempfile
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import date
 from pathlib import Path
 from typing import Callable, Iterator
 
-from .paths import config_dir, config_file, config_lock_file, ensure_private_dir
+from .paths import config_dir
+from .secureio import atomic_write_text_at, directory_fd, open_lock_at, read_text_at
 
 
 DEFAULT_TOOLS = "Codex, Browser, Obsidian and any tool useful to the goal."
+MAX_CONFIG_BYTES = 256 * 1024
 DEFAULT_CONFIG = {
     "version": 2,
     "interval_minutes": 5,
@@ -91,57 +92,52 @@ def _normalized(raw: object) -> dict:
     return data
 
 
-def load_config() -> dict:
-    path = config_file()
+def _load_config_at(directory: int) -> dict:
     try:
-        with path.open("r", encoding="utf-8") as handle:
-            return _normalized(json.load(handle))
+        return _normalized(json.loads(read_text_at(directory, "config.json", limit=MAX_CONFIG_BYTES)))
     except (FileNotFoundError, OSError, ValueError):
         return deepcopy(DEFAULT_CONFIG)
 
 
-def _write_atomic(path: Path, data: dict) -> None:
-    ensure_private_dir(path.parent)
-    fd, temporary = tempfile.mkstemp(prefix=".config-", suffix=".tmp", dir=path.parent)
+def load_config() -> dict:
     try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, sort_keys=True, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        path.chmod(0o600)
-    except BaseException:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-        raise
+        with directory_fd(config_dir(), create=True, private=True) as directory:
+            return _load_config_at(directory)
+    except OSError:
+        return deepcopy(DEFAULT_CONFIG)
+
+
+def _write_atomic(directory: int, data: dict) -> None:
+    content = json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+    if len(content.encode("utf-8")) > MAX_CONFIG_BYTES:
+        raise ConfigError("Configuration exceeded its size limit.")
+    atomic_write_text_at(directory, "config.json", content)
 
 
 @contextmanager
-def _locked() -> Iterator[None]:
-    ensure_private_dir(config_dir())
-    with config_lock_file().open("a+", encoding="utf-8") as lock:
-        config_lock_file().chmod(0o600)
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        yield
+def _locked() -> Iterator[int]:
+    with directory_fd(config_dir(), create=True, private=True) as directory:
+        lock_descriptor = open_lock_at(directory, ".config.lock")
+        try:
+            fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+            yield directory
+        finally:
+            os.close(lock_descriptor)
 
 
 def save_config(data: dict) -> dict:
     clean = _normalized(data)
-    with _locked():
-        _write_atomic(config_file(), clean)
+    with _locked() as directory:
+        _write_atomic(directory, clean)
     return clean
 
 
 def mutate_config(change: Callable[[dict], None]) -> dict:
-    with _locked():
-        current = load_config()
+    with _locked() as directory:
+        current = _load_config_at(directory)
         change(current)
         clean = _normalized(current)
-        _write_atomic(config_file(), clean)
+        _write_atomic(directory, clean)
         return clean
 
 

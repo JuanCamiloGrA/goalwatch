@@ -30,10 +30,14 @@ Omarchy bar ── toggle/settings ───────────────
   overlap.
 - `grim` is the only capture child process. It writes a scaled JPEG to stdout;
   GoalWatch reads those bytes directly and never creates a screenshot file.
+  Every child process has a wall-clock deadline, byte-limited stdout/stderr,
+  and an isolated process group that is killed as a unit on timeout or overflow.
 - Gemini receives one stateless `generateContent` request per due check. The
-  response uses a JSON schema with exactly `alert` and `complement`.
+  response uses a JSON schema with exactly `alert` and `complement`. Response
+  bodies are capped at 512 KiB and HTTP redirects are never followed.
 - Quickshell watches an atomic runtime-state file. It never receives the API key
-  and does not call Gemini itself.
+  and does not call Gemini itself. Dynamic runtime text is length-capped and
+  rendered explicitly as plain text.
 - Manual goal text is written to the CLI over stdin, never argv. It is stored
   only in the private mode-`0600` config and ephemeral runtime state.
 - Obsidian invokes the CLI with an argument array, never a shell command. Note
@@ -43,6 +47,9 @@ Omarchy bar ── toggle/settings ───────────────
   atomically installs the companion, preserves every unrelated community
   plugin entry, and only then changes the active source. Disabling changes the
   source first, then performs idempotent companion cleanup.
+- Config, runtime state, and metrics paths are anchored to no-follow directory
+  descriptors. Atomic replacements cannot traverse a substituted file symlink,
+  and Markdown is read from one no-follow descriptor after size/type checks.
 
 ## State machine
 

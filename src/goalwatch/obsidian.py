@@ -4,10 +4,11 @@ import json
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 from .config import load_config, set_obsidian_integration
+from .process import run_bounded
+from .secureio import atomic_write_text_at, directory_fd, read_text_at
 
 
 PLUGIN_ID = "goalwatch"
@@ -17,6 +18,7 @@ REGISTRIES = (
     "~/snap/obsidian/current/.config/obsidian/obsidian.json",
 )
 REQUIRED_PLUGIN_FILES = ("main.js", "manifest.json")
+MAX_REGISTRY_BYTES = 1024 * 1024
 
 
 class ObsidianError(RuntimeError):
@@ -107,37 +109,28 @@ def _plugin_destination(vault: Path) -> Path:
 
 
 def _atomic_json(path: Path, data: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}-", suffix=".tmp", dir=path.parent)
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    except BaseException:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-        raise
+    content = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    with directory_fd(path.parent, create=True) as directory:
+        atomic_write_text_at(directory, path.name, content)
 
 
 def _community_plugins(vault: Path, strict: bool = True) -> tuple[Path, list[str]]:
     path = vault / ".obsidian" / "community-plugins.json"
-    if path.is_symlink():
-        if strict:
-            raise ObsidianError(f"Refusing to replace a symlinked plugin registry: {path}")
-        return path, []
     try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
+        with directory_fd(path.parent) as directory:
+            parsed = json.loads(
+                read_text_at(directory, path.name, limit=MAX_REGISTRY_BYTES)
+            )
     except FileNotFoundError:
         return path, []
     except (OSError, ValueError) as error:
         if strict:
-            raise ObsidianError(f"Could not read {path} without risking other plugins.") from error
+            message = (
+                f"Refusing to replace a symlinked plugin registry: {path}"
+                if path.is_symlink()
+                else f"Could not read {path} without risking other plugins."
+            )
+            raise ObsidianError(message) from error
         return path, []
     if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
         if strict:
@@ -230,12 +223,12 @@ def _try_live_command(vault: Path, command: str) -> bool:
     if not executable or not obsidian_running():
         return False
     try:
-        result = subprocess.run(
+        result = run_bounded(
             [executable, f"vault={vault.name}", command, f"id={PLUGIN_ID}"],
-            capture_output=True,
-            text=True,
             timeout=8,
-            check=False,
+            stdout_limit=128 * 1024,
+            stderr_limit=128 * 1024,
+            text=True,
         )
     except (OSError, subprocess.SubprocessError):
         return False

@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from .secureio import directory_fd
+
 
 APP_NAME = "goalwatch"
 
@@ -43,8 +45,5 @@ def metrics_file() -> Path:
 
 
 def ensure_private_dir(path: Path) -> None:
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    try:
-        path.chmod(0o700)
-    except OSError:
+    with directory_fd(path, create=True, private=True):
         pass

@@ -31,6 +31,7 @@ from .obsidian import (
     integration_status,
 )
 from .paths import config_file, metrics_file, runtime_state_file
+from .process import run_bounded
 from .secrets import SecretError, clear_api_key, get_api_key, has_api_key, set_api_key
 from .state import read_state, write_off_state, write_state
 
@@ -44,12 +45,13 @@ def emit(data: object) -> None:
 
 
 def systemctl(*arguments: str, capture: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(
+    del capture
+    return run_bounded(
         ["systemctl", "--user", *arguments],
-        capture_output=capture,
-        text=True,
         timeout=15,
-        check=False,
+        stdout_limit=256 * 1024,
+        stderr_limit=256 * 1024,
+        text=True,
     )
 
 

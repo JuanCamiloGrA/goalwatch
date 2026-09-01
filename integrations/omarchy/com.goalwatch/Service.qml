@@ -28,8 +28,8 @@ Item {
       snapshot = parsed && typeof parsed === "object" ? parsed : ({})
       alert = parsed && parsed.alert && typeof parsed.alert === "object" ? parsed.alert : ({})
       alertActive = alert.active === true
-      currentGoal = parsed && parsed.goal ? String(parsed.goal) : "Current goal"
-      complement = alert.complement ? String(alert.complement) : "This activity is unrelated to the current goal."
+      currentGoal = parsed && parsed.goal ? String(parsed.goal).slice(0, 2000) : "Current goal"
+      complement = alert.complement ? String(alert.complement).slice(0, 700) : "This activity is unrelated to the current goal."
     } catch (e) {
       console.warn("GoalWatch: ignoring invalid runtime state", e)
     }
@@ -329,6 +329,7 @@ Item {
                 Text {
                   width: parent.width
                   text: root.currentGoal
+                  textFormat: Text.PlainText
                   color: root.white
                   wrapMode: Text.WordWrap
                   maximumLineCount: 3
@@ -384,6 +385,7 @@ Item {
                     anchors.top: explanationLabel.bottom
                     anchors.topMargin: 11
                     text: root.complement
+                    textFormat: Text.PlainText
                     color: root.white
                     opacity: 0.92
                     wrapMode: Text.WordWrap

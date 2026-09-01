@@ -188,6 +188,8 @@ account service, telemetry endpoint, or screenshot history.
 - Screenshots stay in memory and are never saved by GoalWatch.
 - The Gemini key is stored in the desktop Secret Service and never appears in config, argv, UI state, metrics, or logs.
 - Metrics never retain goal text, screenshots, visible text, window titles, or Gemini explanations.
+- Child-process and Gemini response streams have hard byte limits and deadlines; redirects are rejected before the API key can be replayed.
+- Private config, runtime state, metrics, and Markdown reads use no-follow, descriptor-anchored I/O.
 - Local metric rows are pruned after 90 days.
 - Stopping GoalWatch cancels future captures and requests.
 
