@@ -58,6 +58,10 @@ Run them with:
   connected monitor and cleared through the same CLI action used by the button.
 - The API-key field is password-masked, starts empty, sends its replacement over
   child-process stdin, and never receives the current key from the daemon.
+- The public GitHub repository was installed through `omarchy plugin add`, then
+  completed with the checkout-local setup script. The Git checkout remained
+  clean and updateable, the service remained disabled/off, and the nested QML
+  entry points produced and cleared the expected overlay.
 
 ## Credentialed Gemini acceptance
 
