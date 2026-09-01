@@ -14,6 +14,9 @@ These rules apply to human and AI-assisted contributions throughout the reposito
 - The alert must cover every display, take exclusive keyboard focus, ignore Escape and outside clicks, and dismiss only through its acknowledgement action or the recovery CLI.
 - Obsidian changes must use its normal editor APIs and must not modify unrelated notes or plugins.
 - Use the canonical eye geometry in `assets/goalwatch-eye.svg` and `integrations/omarchy/com.goalwatch/EyeIcon.qml`; do not introduce a competing logo.
+- Keep the root marketplace manifest and the packaged Omarchy manifest aligned
+  on id, version, author, description, kinds, and bar-widget metadata. Their
+  entry-point paths intentionally differ because they have different roots.
 
 ## Make focused changes
 
@@ -29,6 +32,7 @@ Run:
 
 ```bash
 ./scripts/test.sh
+omarchy plugin validate .
 omarchy plugin validate integrations/omarchy/com.goalwatch
 systemd-analyze --user verify packaging/systemd/goalwatch.service
 ```

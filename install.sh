@@ -117,15 +117,17 @@ fi
 install -m 755 "$goalwatch_root/packaging/bin/goalwatch" "$goalwatch_bin"
 install -m 644 "$goalwatch_root/packaging/systemd/goalwatch.service" "$goalwatch_unit"
 
-goalwatch_plugin_stage="$(mktemp -d "$goalwatch_config_home/omarchy/plugins/.goalwatch.XXXXXX")"
-goalwatch_plugin_backup="$goalwatch_config_home/omarchy/plugins/.com.goalwatch.previous.$$"
-cp -a "$goalwatch_root/integrations/omarchy/com.goalwatch/." "$goalwatch_plugin_stage/"
-if [[ -d $goalwatch_plugin ]]; then
-  mv -- "$goalwatch_plugin" "$goalwatch_plugin_backup"
-fi
-mv -- "$goalwatch_plugin_stage" "$goalwatch_plugin"
-if [[ -d $goalwatch_plugin_backup ]]; then
-  rm -rf -- "$goalwatch_plugin_backup"
+if [[ $(realpath -m "$goalwatch_root") != $(realpath -m "$goalwatch_plugin") ]]; then
+  goalwatch_plugin_stage="$(mktemp -d "$goalwatch_config_home/omarchy/plugins/.goalwatch.XXXXXX")"
+  goalwatch_plugin_backup="$goalwatch_config_home/omarchy/plugins/.com.goalwatch.previous.$$"
+  cp -a "$goalwatch_root/integrations/omarchy/com.goalwatch/." "$goalwatch_plugin_stage/"
+  if [[ -d $goalwatch_plugin ]]; then
+    mv -- "$goalwatch_plugin" "$goalwatch_plugin_backup"
+  fi
+  mv -- "$goalwatch_plugin_stage" "$goalwatch_plugin"
+  if [[ -d $goalwatch_plugin_backup ]]; then
+    rm -rf -- "$goalwatch_plugin_backup"
+  fi
 fi
 
 install -m 644 "$goalwatch_root/README.md" "$goalwatch_doc/README.md"

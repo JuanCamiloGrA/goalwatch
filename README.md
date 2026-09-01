@@ -65,16 +65,27 @@ The installer supplies missing Arch packages for Python, `grim`, and
 
 ## Install
 
-Clone or download this repository on the Omarchy machine, then run:
+Add the public repository through Omarchy, then run the included setup script:
 
 ```bash
-./install.sh
+omarchy plugin add https://github.com/JuanCamiloGrA/goalwatch.git --yes
+~/.config/omarchy/plugins/com.goalwatch/install.sh
 ```
 
-The script installs every GoalWatch component into user-owned paths, validates
-and enables the Omarchy plugin, discovers and enables the Obsidian plugin in
-registered vaults, reloads the systemd user manager, and preserves the running
-state during upgrades. GoalWatch remains off after a first installation.
+Omarchy deliberately clones third-party plugins disabled and never runs install
+hooks. The second command is the explicit setup step for this hybrid plugin: it
+installs missing system packages through Omarchy, copies the Python runtime,
+adds the systemd user service, discovers and enables the Obsidian companion,
+validates and enables the bar widget, and preserves the Git checkout for future
+`omarchy plugin update` operations. GoalWatch remains off after a first install.
+
+To install from a development checkout instead:
+
+```bash
+git clone https://github.com/JuanCamiloGrA/goalwatch.git
+cd goalwatch
+./install.sh
+```
 
 Useful installer options:
 
@@ -87,7 +98,19 @@ Useful installer options:
 
 Use `--vault` when Obsidian has not registered the intended vault.
 `--skip-packages` turns missing dependencies into an error instead of installing
-them. Run the same command again to update an existing installation.
+them.
+
+## Update
+
+For a marketplace checkout, review and pull the update with Omarchy, then
+rerun setup so the background runtime and integrations match the new QML:
+
+```bash
+omarchy plugin update com.goalwatch
+~/.config/omarchy/plugins/com.goalwatch/install.sh
+```
+
+For a development checkout, pull the repository and rerun `./install.sh`.
 
 ## First run
 
@@ -202,6 +225,7 @@ alert rate without retaining responses.
 Repository map:
 
 ```text
+manifest.json, preview.png               Omarchy marketplace contract
 src/goalwatch/                         daemon, CLI, capture, Gemini, state, metrics
 integrations/omarchy/com.goalwatch/    Quickshell bar, panel, and alert
 integrations/obsidian/goalwatch/       Obsidian desktop companion
@@ -219,15 +243,20 @@ to human-written and AI-assisted changes. The full product contract is in
 
 ## Uninstall
 
+For a marketplace installation, run the bundled uninstaller rather than
+`omarchy plugin remove` alone. Omarchy removes only the Git checkout and cannot
+know about GoalWatch's user service or Obsidian integration.
+
 ```bash
-./uninstall.sh
+~/.config/omarchy/plugins/com.goalwatch/uninstall.sh
 ```
 
 This removes the runtime and both integrations while preserving config, key,
-and metrics. Remove local data too with:
+and metrics. From a development checkout, use `./uninstall.sh` instead. Remove
+local data too with:
 
 ```bash
-./uninstall.sh --purge
+~/.config/omarchy/plugins/com.goalwatch/uninstall.sh --purge
 ```
 
 Uninstalling never edits or deletes Markdown notes.

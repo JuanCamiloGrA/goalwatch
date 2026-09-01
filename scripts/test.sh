@@ -15,12 +15,26 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$goalwatch_root/src" python3 -m unittest d
 node --check integrations/obsidian/goalwatch/main.js
 node tests/test_obsidian.js
 bash -n install.sh uninstall.sh packaging/bin/goalwatch scripts/test.sh
+python3 -m json.tool manifest.json >/dev/null
 python3 -m json.tool integrations/omarchy/com.goalwatch/manifest.json >/dev/null
 python3 -m json.tool integrations/obsidian/goalwatch/manifest.json >/dev/null
 python3 -m json.tool tests/ai-fixtures/manifest.json >/dev/null
 python3 - <<'PY'
 import json
 from pathlib import Path
+
+root_manifest = json.loads(Path("manifest.json").read_text(encoding="utf-8"))
+packaged_manifest = json.loads(
+    Path("integrations/omarchy/com.goalwatch/manifest.json").read_text(encoding="utf-8")
+)
+shared_fields = (
+    "schemaVersion", "id", "name", "version", "author", "license",
+    "description", "kinds", "keepLoaded", "barWidget",
+)
+for field in shared_fields:
+    assert root_manifest.get(field) == packaged_manifest.get(field), field
+for entry_point in root_manifest["entryPoints"].values():
+    assert Path(entry_point).is_file(), entry_point
 
 manifest = Path("tests/ai-fixtures/manifest.json")
 data = json.loads(manifest.read_text(encoding="utf-8"))
@@ -30,6 +44,7 @@ for case in data["cases"]:
     assert image.read_bytes().startswith(b"\xff\xd8"), image
 PY
 if command -v omarchy >/dev/null 2>&1; then
+  omarchy plugin validate .
   omarchy plugin validate integrations/omarchy/com.goalwatch
 fi
 

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "com.goalwatch",
+  "name": "GoalWatch",
+  "version": "0.1.0",
+  "author": "Juan Camilo Grisales Arias",
+  "license": "MIT",
+  "description": "A silent, screen-aware focus guard for Omarchy and Obsidian.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "integrations/omarchy/com.goalwatch/Service.qml",
+    "barWidget": "integrations/omarchy/com.goalwatch/Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "GoalWatch",
+    "description": "Toggle GoalWatch, inspect the current goal and configure the screen-aware focus guard.",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {},
+    "schema": []
+  }
+}

@@ -35,6 +35,8 @@ Python process while sleeping.
   retention pruning, and cascade deletion.
 - Shell syntax, JavaScript syntax, JSON manifests, Omarchy plugin validation,
   and systemd unit verification pass.
+- The repository-root marketplace manifest and packaged runtime manifest both
+  validate, share public metadata, and resolve every declared entry point.
 
 Run them with:
 

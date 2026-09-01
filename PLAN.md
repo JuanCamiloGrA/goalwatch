@@ -32,6 +32,8 @@ documentation shipped with the product will be written in English.
 - Gemini multimodal classification with an exact structured response.
 - Local, privacy-minimized operational metrics.
 - User-local install, update, uninstall, and troubleshooting documentation.
+- A root Omarchy marketplace manifest and preview with an explicit manual setup
+  boundary for the daemon, systemd unit, dependencies, and Obsidian companion.
 
 ### Not included in the MVP
 
@@ -88,6 +90,8 @@ Quickshell eye/gear ──start/stop/config─────┤
 - Gemini API key: the desktop Secret Service via `secret-tool`; never config files.
 - Runtime source and integrations install beneath user-owned locations only.
 - Nothing under `/usr/share/omarchy/` is modified.
+- When installed as a marketplace checkout, setup preserves the checkout and
+  its `.git` directory so `omarchy plugin update` remains available.
 
 ### 3. Goal extraction contract
 
@@ -347,3 +351,5 @@ The MVP is accepted only if it meets these measured targets on the target machin
 - The service is disabled/off after first install until the user explicitly enables it.
 - The final repository contains source, tests, packaging, English README,
   privacy disclosure, architecture notes, and measured verification results.
+- The repository root validates as the single marketplace plugin manifest, has
+  an optimized preview, and documents why the listing requires manual setup.
