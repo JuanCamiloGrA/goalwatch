@@ -1,0 +1,27 @@
+[Unit]
+Description=GoalWatch screen-aware focus guard
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/goalwatch daemon
+ExecStopPost=-%h/.local/bin/goalwatch state-off
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=2
+KillMode=control-group
+NoNewPrivileges=true
+UMask=0077
+PrivateTmp=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

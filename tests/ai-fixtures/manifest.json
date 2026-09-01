@@ -1,0 +1,14 @@
+{
+  "goal": "Prepare the Q2 financial report",
+  "tools": "Codex, Browser, Obsidian, Terminal, Files and communication with the finance team.",
+  "cases": [
+    {"id": "direct-work", "image": "direct_work.jpg", "expected_alert": false},
+    {"id": "relevant-research", "image": "relevant_research.jpg", "expected_alert": false},
+    {"id": "required-setup", "image": "setup.jpg", "expected_alert": false},
+    {"id": "goal-communication", "image": "communication.jpg", "expected_alert": false},
+    {"id": "ambiguous-files", "image": "ambiguous.jpg", "expected_alert": false},
+    {"id": "unrelated-social", "image": "social_media.jpg", "expected_alert": true},
+    {"id": "unrelated-video", "image": "unrelated_video.jpg", "expected_alert": true},
+    {"id": "unrelated-work", "image": "unrelated_work.jpg", "expected_alert": true}
+  ]
+}

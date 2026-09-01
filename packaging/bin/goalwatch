@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+goalwatch_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH="$goalwatch_data_home/goalwatch/app${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m goalwatch "$@"
