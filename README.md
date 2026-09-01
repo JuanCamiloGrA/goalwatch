@@ -79,11 +79,9 @@ adds the systemd user service, discovers and enables the Obsidian companion,
 validates and enables the bar widget, and preserves the Git checkout for future
 `omarchy plugin update` operations. GoalWatch remains off after a first install.
 
-To install from a development checkout instead:
+If you are already working from a development checkout, run setup directly:
 
 ```bash
-git clone https://github.com/JuanCamiloGrA/goalwatch.git
-cd goalwatch
 ./install.sh
 ```
 
