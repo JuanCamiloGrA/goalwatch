@@ -63,3 +63,25 @@ Privacy and Gemini changes require regression tests for both sides of the data
 boundary: intended audit content must be present, while secrets and audit
 content must remain absent from config, argv, runtime metrics, and logs. Never
 use a real API key in automated tests.
+
+## Release process
+
+Only maintainers publish releases. For a release version `X.Y.Z`:
+
+1. Update `manifest.json`, `integrations/omarchy/com.goalwatch/manifest.json`,
+   `integrations/obsidian/goalwatch/manifest.json`, and
+   `src/goalwatch/__init__.py` to the same SemVer value.
+2. Add the dated release to `CHANGELOG.md` and update measured documentation
+   when behavior, size, privacy, or dependencies changed.
+3. Run the required verification commands and wait for repository CI to pass.
+4. Commit and push the release tree, then create the immutable release point:
+
+   ```bash
+   git tag -a "vX.Y.Z" -m "GoalWatch X.Y.Z"
+   git push origin main "vX.Y.Z"
+   gh release create "vX.Y.Z" --verify-tag --title "GoalWatch X.Y.Z" --generate-notes
+   ```
+
+5. Submit that exact 40-character commit through the Omarchy marketplace's
+   **Verify and publish a newer upstream commit** workflow. Never move a
+   published version tag.

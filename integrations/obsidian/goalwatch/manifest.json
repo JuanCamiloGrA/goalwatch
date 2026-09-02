@@ -1,7 +1,7 @@
 {
   "id": "goalwatch",
   "name": "GoalWatch",
-  "version": "0.3.2",
+  "version": "1.0.0",
   "minAppVersion": "1.0.0",
   "description": "Optionally connects Obsidian goals and daily notes to GoalWatch on Omarchy.",
   "author": "Juan Camilo Grisales Arias",

@@ -3,8 +3,21 @@
 </p>
 
 <p align="center">
-  <strong>A silent, screen-aware focus guard for Omarchy.</strong>
+  <a href="https://github.com/JuanCamiloGrA/goalwatch/releases/latest"><img src="https://img.shields.io/github/v/release/JuanCamiloGrA/goalwatch?display_name=tag&style=flat-square&color=ff4d55" alt="Latest release"></a>
+  <a href="https://github.com/JuanCamiloGrA/goalwatch/actions/workflows/ci.yml"><img src="https://github.com/JuanCamiloGrA/goalwatch/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/JuanCamiloGrA/goalwatch?style=flat-square" alt="MIT license"></a>
 </p>
+
+<p align="center">
+  <strong>Set a goal. GoalWatch stays silent—until your screen stops helping.</strong>
+</p>
+
+Set a goal like **Finish Project X** and work normally. If you drift into
+YouTube, social media, or unrelated work, GoalWatch interrupts every display
+with the alert below. When the screen supports your goal, it stays completely
+silent.
+
+![GoalWatch catches an off-goal screen](preview.png)
 
 GoalWatch runs as a small systemd user service. At a configurable interval it
 reads the goal entered in its Omarchy panel, captures the visible Wayland
@@ -16,6 +29,19 @@ intervention on every display. No goal means no capture and no Gemini request.
 GoalWatch is Omarchy-first software, not a conventional desktop application.
 Its controls and default goal workflow live in the Omarchy bar. Obsidian Sync
 is an optional, one-tap integration.
+
+## Install
+
+```bash
+omarchy plugin add https://github.com/JuanCamiloGrA/goalwatch.git --yes
+~/.config/omarchy/plugins/com.goalwatch/install.sh
+```
+
+Open the GoalWatch gear in the bar, enter a goal and a
+[Gemini API key](https://aistudio.google.com/api-keys), then click the gray eye.
+The installer leaves watching off until you choose to start it. See
+[Installation details](#installation-details) for dependencies, transaction
+guarantees, and optional Obsidian setup.
 
 ## What ships
 
@@ -61,7 +87,9 @@ Gemini completes, including HTTP failures. If the request cannot be audited, it
 is not sent. Invalid model output, network problems, missing setup, capture
 failures, and a locked session never create an alert.
 
-## Requirements
+## Installation details
+
+### Requirements
 
 - Omarchy with its Quickshell bar and a Wayland session.
 - A systemd user session.
@@ -70,15 +98,6 @@ failures, and a locked session never create an alert.
 
 The installer supplies missing Arch packages for Python, `grim`, and
 `secret-tool` through Omarchy's package command.
-
-## Install
-
-Add the public repository through Omarchy, then run the included setup script:
-
-```bash
-omarchy plugin add https://github.com/JuanCamiloGrA/goalwatch.git --yes
-~/.config/omarchy/plugins/com.goalwatch/install.sh
-```
 
 Omarchy deliberately clones third-party plugins disabled and never runs install
 hooks. The second command is the explicit setup step for this hybrid plugin: it
@@ -323,11 +342,14 @@ scripts/                               installer support, tests, AI benchmark
 tests/                                 offline tests and non-sensitive AI fixtures
 docs/                                  architecture, privacy, measured verification
 assets/                                canonical brand and UI previews
+.github/workflows/                     public continuous integration
+CHANGELOG.md, SECURITY.md              release history and private reporting policy
 ```
 
 Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md). Its constraints
 apply equally to human-written and AI-assisted changes. Measured results are in
-[docs/VERIFICATION.md](docs/VERIFICATION.md).
+[docs/VERIFICATION.md](docs/VERIFICATION.md), and published changes are recorded
+in [CHANGELOG.md](CHANGELOG.md).
 
 ## Uninstall
 

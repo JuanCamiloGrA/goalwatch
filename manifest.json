@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "com.goalwatch",
   "name": "GoalWatch",
-  "version": "0.3.2",
+  "version": "1.0.0",
   "author": "Juan Camilo Grisales Arias",
   "license": "MIT",
-  "description": "A silent, screen-aware focus guard for Omarchy with optional Obsidian sync.",
+  "description": "Set a goal. Drift into social media, videos, or unrelated work, and GoalWatch takes over every display until you refocus. Gemini checks quietly in the background; no goal means no screenshots or AI requests.",
   "kinds": [
     "service",
     "bar-widget"
@@ -17,7 +17,7 @@
   },
   "barWidget": {
     "displayName": "GoalWatch",
-    "description": "Toggle GoalWatch, inspect its request audit and configure the screen-aware focus guard.",
+    "description": "Set a goal, watch quietly, and intervene across every display when work drifts off goal.",
     "category": "Productivity",
     "allowMultiple": false,
     "defaultSection": "right",

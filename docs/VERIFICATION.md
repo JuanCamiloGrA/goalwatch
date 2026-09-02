@@ -1,6 +1,6 @@
-# GoalWatch 0.3.2 verification report
+# GoalWatch 1.0.0 verification report
 
-Verified on 2026-09-01 with Omarchy 4.0.2, Quickshell 0.3.1, and Python 3.14.
+Verified on 2026-09-02 with Omarchy 4.0.2, Quickshell 0.3.1, and Python 3.14.
 
 ## Acceptance results
 
@@ -86,7 +86,7 @@ Run them with:
   immediately, the companion directory and registry entry were removed and
   restored, and all nine unrelated community plugins remained unchanged.
 - Re-running the default installer updated an already-authorized Obsidian
-  companion to 0.3.2 without requiring `--with-obsidian` again.
+  companion without requiring `--with-obsidian` again.
 - An update started with the service active completed with the replacement
   service active; the final acceptance cleanup then returned it to disabled/off.
 - The audit browser reported the enforced 7-day, 2,000-record, and 512 MiB

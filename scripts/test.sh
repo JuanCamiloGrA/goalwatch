@@ -26,6 +26,7 @@ python3 -m json.tool integrations/obsidian/goalwatch/manifest.json >/dev/null
 python3 -m json.tool tests/ai-fixtures/manifest.json >/dev/null
 python3 - <<'PY'
 import json
+import re
 from pathlib import Path
 
 root_manifest = json.loads(Path("manifest.json").read_text(encoding="utf-8"))
@@ -40,6 +41,18 @@ for field in shared_fields:
     assert root_manifest.get(field) == packaged_manifest.get(field), field
 for entry_point in root_manifest["entryPoints"].values():
     assert Path(entry_point).is_file(), entry_point
+
+obsidian_manifest = json.loads(
+    Path("integrations/obsidian/goalwatch/manifest.json").read_text(encoding="utf-8")
+)
+python_init = Path("src/goalwatch/__init__.py").read_text(encoding="utf-8")
+python_version = re.search(r'^__version__ = "([^"]+)"$', python_init, re.MULTILINE)
+assert python_version, "Python package version is missing"
+version = root_manifest["version"]
+assert re.fullmatch(r"\d+\.\d+\.\d+", version), "release version must be SemVer"
+assert packaged_manifest["version"] == version, "packaged Omarchy version"
+assert obsidian_manifest["version"] == version, "Obsidian companion version"
+assert python_version.group(1) == version, "Python package version"
 
 manifest = Path("tests/ai-fixtures/manifest.json")
 data = json.loads(manifest.read_text(encoding="utf-8"))
