@@ -72,6 +72,10 @@ Run them with:
 
 - A complete uninstall/reinstall cycle succeeded and preserved config, keyring,
   metrics, and request-audit data by default.
+- The live 0.3.1-to-0.3.2 update preserved all three private audit records,
+  every screenshot hash, every exact response hash, and all metrics table row
+  counts. On first access, both databases became mode-`0600`, single-link,
+  rollback-mode atomic snapshots with no WAL, SHM, or journal path present.
 - The final install is disabled and off until the user clicks the eye.
 - A fresh configuration starts in manual mode and an empty goal produces
   `NO GOAL` without a capture, request, or alert.
