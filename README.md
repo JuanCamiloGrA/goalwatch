@@ -3,9 +3,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/JuanCamiloGrA/goalwatch/releases/latest"><img src="https://img.shields.io/github/v/release/JuanCamiloGrA/goalwatch?display_name=tag&style=flat-square&color=ff4d55" alt="Latest release"></a>
-  <a href="https://github.com/JuanCamiloGrA/goalwatch/actions/workflows/ci.yml"><img src="https://github.com/JuanCamiloGrA/goalwatch/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/JuanCamiloGrA/goalwatch?style=flat-square" alt="MIT license"></a>
+  <a href="https://github.com/invrnt/goalwatch/releases/latest"><img src="https://img.shields.io/github/v/release/invrnt/goalwatch?display_name=tag&style=flat-square&color=ff4d55" alt="Latest release"></a>
+  <a href="https://github.com/invrnt/goalwatch/actions/workflows/ci.yml"><img src="https://github.com/invrnt/goalwatch/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/invrnt/goalwatch?style=flat-square" alt="MIT license"></a>
 </p>
 
 <p align="center">
@@ -33,7 +33,7 @@ is an optional, one-tap integration.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/JuanCamiloGrA/goalwatch.git --yes
+omarchy plugin add https://github.com/invrnt/goalwatch.git --yes
 ~/.config/omarchy/plugins/com.goalwatch/install.sh
 ```
 

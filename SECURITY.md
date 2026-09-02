@@ -8,7 +8,7 @@ reporting a problem already fixed upstream.
 
 ## Report a vulnerability
 
-Use [GitHub private vulnerability reporting](https://github.com/JuanCamiloGrA/goalwatch/security/advisories/new).
+Use [GitHub private vulnerability reporting](https://github.com/invrnt/goalwatch/security/advisories/new).
 Do not open a public issue for a suspected vulnerability.
 
 Include the affected GoalWatch version and commit, the relevant Omarchy and

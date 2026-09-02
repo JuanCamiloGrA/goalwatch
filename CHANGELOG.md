@@ -24,4 +24,4 @@ First stable release for Omarchy.
 - Mutable input, subprocess, Gemini, SQLite snapshot, audit, and retention
   boundaries are bounded and covered by adversarial regression tests.
 
-[1.0.0]: https://github.com/JuanCamiloGrA/goalwatch/releases/tag/v1.0.0
+[1.0.0]: https://github.com/invrnt/goalwatch/releases/tag/v1.0.0
