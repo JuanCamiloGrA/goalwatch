@@ -15,6 +15,8 @@ from .secureio import atomic_write_text_at, directory_fd, open_lock_at, read_tex
 
 DEFAULT_TOOLS = "Codex, Browser, Obsidian and any tool useful to the goal."
 MAX_CONFIG_BYTES = 256 * 1024
+MAX_MODEL_CHARS = 160
+MAX_PATH_CHARS = 4096
 DEFAULT_CONFIG = {
     "version": 2,
     "interval_minutes": 5,
@@ -51,7 +53,11 @@ def _normalized(raw: object) -> dict:
     data["interval_minutes"] = min(1440, max(1, interval))
 
     model = str(data["model"] or "").strip()
-    data["model"] = model or DEFAULT_CONFIG["model"]
+    data["model"] = (
+        model
+        if model and len(model) <= MAX_MODEL_CHARS and not any(ch.isspace() for ch in model)
+        else DEFAULT_CONFIG["model"]
+    )
     for key in (
         "goal_source",
         "manual_goal",
@@ -84,6 +90,23 @@ def _normalized(raw: object) -> dict:
         data["goal_source"] = "obsidian" if data["obsidian_enabled"] else "manual"
     data["manual_goal"] = data["manual_goal"].strip()
     data["manual_tools"] = data["manual_tools"].strip() or DEFAULT_TOOLS
+    from .goals import MAX_GOAL_CHARS, MAX_TOOLS_CHARS
+
+    if len(data["manual_goal"]) > MAX_GOAL_CHARS:
+        data["manual_goal"] = ""
+    if len(data["manual_tools"]) > MAX_TOOLS_CHARS:
+        data["manual_tools"] = DEFAULT_TOOLS
+    if len(data["default_tools"]) > MAX_TOOLS_CHARS:
+        data["default_tools"] = DEFAULT_TOOLS
+    for key in ("obsidian_vault", "markdown_file", "daily_file"):
+        if (
+            len(data[key]) > MAX_PATH_CHARS
+            or any(ord(character) < 32 for character in data[key])
+        ):
+            data[key] = ""
+    for key in ("daily_date", "manual_override_date"):
+        if len(data[key]) > 10:
+            data[key] = ""
     if data["markdown_source"] not in {"none", "daily", "manual"}:
         data["markdown_source"] = "none"
     if not data["default_tools"].strip():
@@ -181,6 +204,10 @@ def set_manual_goal(goal: str, tools: str) -> dict:
 def set_obsidian_integration(enabled: bool, vault: str = "") -> dict:
     clean_vault = ""
     if vault.strip():
+        if len(vault.strip()) > MAX_PATH_CHARS or any(
+            ord(character) < 32 for character in vault.strip()
+        ):
+            raise ConfigError("Obsidian vault path is invalid or too long.")
         candidate = Path(os.path.abspath(os.path.expanduser(vault.strip()))).resolve()
         if not candidate.is_dir() or not (candidate / ".obsidian").is_dir():
             raise ConfigError(f"Not an Obsidian vault: {candidate}")
@@ -196,6 +223,10 @@ def set_obsidian_integration(enabled: bool, vault: str = "") -> dict:
 
 
 def _absolute_markdown(path: str) -> str:
+    if len(path.strip()) > MAX_PATH_CHARS or any(
+        ord(character) < 32 for character in path.strip()
+    ):
+        raise ConfigError("Markdown File path is invalid or too long.")
     clean = os.path.abspath(os.path.expanduser(path.strip())) if path.strip() else ""
     if clean and Path(clean).suffix.lower() != ".md":
         raise ConfigError("Markdown File must end in .md.")
@@ -217,6 +248,12 @@ def set_manual_file(path: str, override_date: str | None = None) -> dict:
 
 
 def set_daily_file(vault: str, relative_file: str, daily_date: str) -> dict:
+    if (
+        len(vault.strip()) > MAX_PATH_CHARS
+        or len(relative_file.strip()) > MAX_PATH_CHARS
+        or any(ord(character) < 32 for character in vault.strip() + relative_file.strip())
+    ):
+        raise ConfigError("Vault or daily file path is invalid or too long.")
     vault_path = Path(os.path.abspath(os.path.expanduser(vault.strip()))).resolve()
     relative = Path(relative_file.strip())
     if not vault.strip() or not relative_file.strip():

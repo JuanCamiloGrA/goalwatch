@@ -1,3 +1,3 @@
 """GoalWatch — an Omarchy-first focus guard."""
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"

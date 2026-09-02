@@ -4,11 +4,12 @@ import fcntl
 import os
 import sqlite3
 import statistics
-import stat
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Iterator
 
-from .database import open_bound_sqlite
+from .database import AtomicSQLite, LEGACY_AUXILIARY_SUFFIXES
 from .paths import metrics_file
 from .secureio import directory_fd, open_lock_at
 
@@ -17,11 +18,9 @@ METRICS_RETENTION_DAYS = 90
 MAX_CHECK_ROWS = 30_000
 MAX_SESSION_ROWS = 5_000
 MAX_METRICS_DB_BYTES = 16 * 1024 * 1024
-MAX_METRICS_WAL_BYTES = 4 * 1024 * 1024
 
 
 SCHEMA = """
-PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS sessions (
   id INTEGER PRIMARY KEY,
@@ -58,68 +57,74 @@ def utc_now() -> str:
 
 
 class Metrics:
+    """Bounded metrics stored as one locked, atomic SQLite snapshot."""
+
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or metrics_file()
         self._closed = False
         self._directory = directory_fd(self.path.parent, create=True, private=True)
         self._directory_fd = self._directory.__enter__()
         self._lock_fd = -1
-        self._database_fd = -1
+        self._data_lock_fd = -1
+        self.database: AtomicSQLite | None = None
         try:
             self._lock_fd = open_lock_at(self._directory_fd, ".metrics.lock")
             fcntl.flock(self._lock_fd, fcntl.LOCK_SH)
-            for name in (f"{self.path.name}-wal", f"{self.path.name}-shm"):
-                try:
-                    info = os.stat(name, dir_fd=self._directory_fd, follow_symlinks=False)
-                except FileNotFoundError:
-                    continue
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
-                    raise OSError(f"Refusing unsafe metrics path: {name}")
-            try:
-                self.connection, self._database_fd = open_bound_sqlite(
-                    self._directory_fd,
-                    self.path.name,
-                    timeout=5,
-                )
-            except OSError as error:
-                raise OSError(f"Refusing unsafe metrics path: {self.path.name}") from error
+            self._data_lock_fd = open_lock_at(self._directory_fd, ".metrics.data.lock")
+            self.database = AtomicSQLite(
+                self._directory_fd,
+                self.path.name,
+                max_bytes=MAX_METRICS_DB_BYTES,
+            )
+            with self._operation(write=True):
+                self._prune_locked(METRICS_RETENTION_DAYS)
         except BaseException:
+            if self.database is not None:
+                self.database.close()
+            if self._data_lock_fd >= 0:
+                os.close(self._data_lock_fd)
             if self._lock_fd >= 0:
                 os.close(self._lock_fd)
             self._directory.__exit__(None, None, None)
             raise
-        try:
-            self.connection.row_factory = sqlite3.Row
-            self._configure_size_limits()
-            self.connection.executescript(SCHEMA)
-            self.prune(METRICS_RETENTION_DAYS)
-            self.connection.commit()
-        except BaseException:
-            self.connection.close()
-            os.close(self._database_fd)
-            os.close(self._lock_fd)
-            self._directory.__exit__(None, None, None)
-            raise
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        if self.database is None:
+            raise RuntimeError("Metrics archive is closed.")
+        return self.database.connection
 
     def close(self) -> None:
         if self._closed:
             return
-        self.connection.close()
-        os.close(self._database_fd)
+        if self.database is not None:
+            self.database.close()
+        os.close(self._data_lock_fd)
         os.close(self._lock_fd)
         self._directory.__exit__(None, None, None)
         self._closed = True
 
-    def _configure_size_limits(self) -> None:
-        page_size = int(self.connection.execute("PRAGMA page_size").fetchone()[0])
-        max_pages = max(1, MAX_METRICS_DB_BYTES // page_size)
-        self.connection.execute(f"PRAGMA max_page_count={max_pages}")
-        self.connection.execute("PRAGMA wal_autocheckpoint=250")
-        self.connection.execute(f"PRAGMA journal_size_limit={MAX_METRICS_WAL_BYTES}")
-        if os.fstat(self._database_fd).st_size > MAX_METRICS_DB_BYTES:
-            raise OSError("Metrics database exceeds its size quota.")
+    @contextmanager
+    def _operation(self, *, write: bool) -> Iterator[sqlite3.Connection]:
+        if self.database is None:
+            raise RuntimeError("Metrics archive is closed.")
+        fcntl.flock(self._data_lock_fd, fcntl.LOCK_EX)
+        try:
+            self.database.load()
+            self.connection.executescript(SCHEMA)
+            yield self.connection
+            if write:
+                self.database.save()
+        finally:
+            fcntl.flock(self._data_lock_fd, fcntl.LOCK_UN)
 
-    def _trim_rows(self, *, check_limit: int, session_limit: int, protected_session: int = 0) -> None:
+    def _trim_rows_locked(
+        self,
+        *,
+        check_limit: int,
+        session_limit: int,
+        protected_session: int = 0,
+    ) -> None:
         self.connection.execute(
             """
             DELETE FROM checks WHERE id IN (
@@ -139,22 +144,22 @@ class Metrics:
         )
 
     def start_session(self) -> int:
-        self._trim_rows(
-            check_limit=MAX_CHECK_ROWS,
-            session_limit=MAX_SESSION_ROWS - 1,
-        )
-        cursor = self.connection.execute(
-            "INSERT INTO sessions(started_at) VALUES(?)", (utc_now(),)
-        )
-        self.connection.commit()
-        return int(cursor.lastrowid)
+        with self._operation(write=True):
+            self._trim_rows_locked(
+                check_limit=MAX_CHECK_ROWS,
+                session_limit=MAX_SESSION_ROWS - 1,
+            )
+            cursor = self.connection.execute(
+                "INSERT INTO sessions(started_at) VALUES(?)", (utc_now(),)
+            )
+            return int(cursor.lastrowid)
 
     def stop_session(self, session_id: int) -> None:
-        self.connection.execute(
-            "UPDATE sessions SET stopped_at=? WHERE id=? AND stopped_at IS NULL",
-            (utc_now(), session_id),
-        )
-        self.connection.commit()
+        with self._operation(write=True):
+            self.connection.execute(
+                "UPDATE sessions SET stopped_at=? WHERE id=? AND stopped_at IS NULL",
+                (utc_now(), session_id),
+            )
 
     def record_check(
         self,
@@ -169,66 +174,78 @@ class Metrics:
         goal_hash: str = "",
         error_code: str = "",
     ) -> int:
-        self._trim_rows(
-            check_limit=MAX_CHECK_ROWS - 1,
-            session_limit=MAX_SESSION_ROWS - 1,
-            protected_session=session_id,
-        )
-        cursor = self.connection.execute(
-            """
-            INSERT INTO checks(
-              session_id, occurred_at, outcome, model, latency_ms, image_bytes,
-              prompt_tokens, output_tokens, goal_hash, error_code
-            ) VALUES(?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                session_id,
-                utc_now(),
-                outcome,
-                model,
-                max(0, int(latency_ms)),
-                max(0, int(image_bytes)),
-                max(0, int(prompt_tokens)),
-                max(0, int(output_tokens)),
-                goal_hash,
-                error_code,
-            ),
-        )
-        check_id = int(cursor.lastrowid)
-        if outcome == "on_goal":
-            self.connection.execute(
-                "UPDATE alerts SET recovered_at=? WHERE recovered_at IS NULL", (utc_now(),)
+        with self._operation(write=True):
+            self._trim_rows_locked(
+                check_limit=MAX_CHECK_ROWS - 1,
+                session_limit=MAX_SESSION_ROWS - 1,
+                protected_session=session_id,
             )
-        self.connection.commit()
-        return check_id
+            cursor = self.connection.execute(
+                """
+                INSERT INTO checks(
+                  session_id, occurred_at, outcome, model, latency_ms, image_bytes,
+                  prompt_tokens, output_tokens, goal_hash, error_code
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    session_id,
+                    utc_now(),
+                    outcome,
+                    model,
+                    max(0, int(latency_ms)),
+                    max(0, int(image_bytes)),
+                    max(0, int(prompt_tokens)),
+                    max(0, int(output_tokens)),
+                    goal_hash,
+                    error_code,
+                ),
+            )
+            check_id = int(cursor.lastrowid)
+            if outcome == "on_goal":
+                self.connection.execute(
+                    "UPDATE alerts SET recovered_at=? WHERE recovered_at IS NULL",
+                    (utc_now(),),
+                )
+            return check_id
 
     def create_alert(self, check_id: int) -> int:
-        cursor = self.connection.execute(
-            "INSERT INTO alerts(check_id, shown_at) VALUES(?,?)", (check_id, utc_now())
-        )
-        self.connection.commit()
-        return int(cursor.lastrowid)
+        with self._operation(write=True):
+            cursor = self.connection.execute(
+                "INSERT INTO alerts(check_id, shown_at) VALUES(?,?)",
+                (check_id, utc_now()),
+            )
+            return int(cursor.lastrowid)
 
     def acknowledge_alert(self, alert_id: int) -> None:
-        self.connection.execute(
-            "UPDATE alerts SET acknowledged_at=? WHERE id=? AND acknowledged_at IS NULL",
-            (utc_now(), alert_id),
-        )
-        self.connection.commit()
+        with self._operation(write=True):
+            self.connection.execute(
+                "UPDATE alerts SET acknowledged_at=? WHERE id=? AND acknowledged_at IS NULL",
+                (utc_now(), alert_id),
+            )
 
-    def prune(self, days: int = METRICS_RETENTION_DAYS) -> None:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    def _prune_locked(self, days: int) -> None:
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=days)
+        ).isoformat(timespec="seconds")
         self.connection.execute("DELETE FROM checks WHERE occurred_at < ?", (cutoff,))
         self.connection.execute(
-            "DELETE FROM sessions WHERE stopped_at IS NOT NULL AND stopped_at < ?", (cutoff,)
+            "DELETE FROM sessions WHERE stopped_at IS NOT NULL AND stopped_at < ?",
+            (cutoff,),
         )
-        self._trim_rows(
+        self._trim_rows_locked(
             check_limit=MAX_CHECK_ROWS,
             session_limit=MAX_SESSION_ROWS,
         )
-        self.connection.commit()
+
+    def prune(self, days: int = METRICS_RETENTION_DAYS) -> None:
+        with self._operation(write=True):
+            self._prune_locked(days)
 
     def summary(self, session_id: int | None = None) -> dict:
+        with self._operation(write=False):
+            return self._summary_locked(session_id)
+
+    def _summary_locked(self, session_id: int | None) -> dict:
         local_now = datetime.now().astimezone()
         local_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
         local_end = local_start + timedelta(days=1)
@@ -298,7 +315,9 @@ class Metrics:
             "prompt_tokens_today": sum(row["prompt_tokens"] for row in rows),
             "output_tokens_today": sum(row["output_tokens"] for row in rows),
             "image_bytes_today": sum(row["image_bytes"] for row in rows),
-            "average_return_seconds": round(statistics.mean(recovery_seconds)) if recovery_seconds else 0,
+            "average_return_seconds": (
+                round(statistics.mean(recovery_seconds)) if recovery_seconds else 0
+            ),
             "session_started_at": session_started,
             "streak_started_at": streak_started,
         }
@@ -309,14 +328,22 @@ def reset_metrics(path: Path | None = None) -> None:
     try:
         with directory_fd(target.parent, create=False, private=True) as directory:
             lock = open_lock_at(directory, ".metrics.lock")
+            data_lock = -1
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX)
-                for name in (target.name, f"{target.name}-wal", f"{target.name}-shm"):
+                data_lock = open_lock_at(directory, ".metrics.data.lock")
+                fcntl.flock(data_lock, fcntl.LOCK_EX)
+                for name in (
+                    target.name,
+                    *(f"{target.name}{suffix}" for suffix in LEGACY_AUXILIARY_SUFFIXES),
+                ):
                     try:
                         os.unlink(name, dir_fd=directory)
                     except FileNotFoundError:
                         pass
             finally:
+                if data_lock >= 0:
+                    os.close(data_lock)
                 os.close(lock)
     except FileNotFoundError:
         pass

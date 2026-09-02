@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import os
 import secrets
 import stat
@@ -12,6 +13,38 @@ def _file_name(name: str) -> str:
     if not name or name in {".", ".."} or Path(name).name != name:
         raise OSError("Unsafe file name.")
     return name
+
+
+def _read_validated_descriptor(
+    descriptor: int,
+    *,
+    limit: int,
+    require_owner: bool,
+    require_single_link: bool,
+) -> bytes:
+    info = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or (require_owner and info.st_uid != os.getuid())
+        or (require_single_link and info.st_nlink != 1)
+        or info.st_size < 0
+        or info.st_size > limit
+    ):
+        raise OSError("Refusing an unsafe or oversized file.")
+    current_flags = fcntl.fcntl(descriptor, fcntl.F_GETFL)
+    fcntl.fcntl(descriptor, fcntl.F_SETFL, current_flags & ~os.O_NONBLOCK)
+    chunks: list[bytes] = []
+    remaining = limit + 1
+    while remaining > 0:
+        chunk = os.read(descriptor, min(64 * 1024, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    content = b"".join(chunks)
+    if len(content) > limit:
+        raise OSError("Refusing an oversized file.")
+    return content
 
 
 @contextmanager
@@ -35,22 +68,66 @@ def directory_fd(path: Path, *, create: bool = False, private: bool = False) -> 
         os.close(descriptor)
 
 
-def read_text_at(directory: int, name: str, *, limit: int) -> str:
-    flags = os.O_RDONLY | os.O_CLOEXEC
+def read_bytes_at(
+    directory: int,
+    name: str,
+    *,
+    limit: int,
+    require_owner: bool = True,
+    require_single_link: bool = True,
+) -> bytes:
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     descriptor = os.open(_file_name(name), flags, dir_fd=directory)
     try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
-            raise OSError("Refusing an unsafe or oversized file.")
-        with os.fdopen(descriptor, "rb", closefd=False) as handle:
-            content = handle.read(limit + 1)
-        if len(content) > limit:
-            raise OSError("Refusing an oversized file.")
-        return content.decode("utf-8")
+        return _read_validated_descriptor(
+            descriptor,
+            limit=limit,
+            require_owner=require_owner,
+            require_single_link=require_single_link,
+        )
     finally:
         os.close(descriptor)
+
+
+def read_bytes_path(
+    path: Path,
+    *,
+    limit: int,
+    require_owner: bool = True,
+    require_single_link: bool = True,
+) -> bytes:
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    try:
+        return _read_validated_descriptor(
+            descriptor,
+            limit=limit,
+            require_owner=require_owner,
+            require_single_link=require_single_link,
+        )
+    finally:
+        os.close(descriptor)
+
+
+def read_text_at(
+    directory: int,
+    name: str,
+    *,
+    limit: int,
+    require_owner: bool = True,
+    require_single_link: bool = True,
+) -> str:
+    return read_bytes_at(
+        directory,
+        name,
+        limit=limit,
+        require_owner=require_owner,
+        require_single_link=require_single_link,
+    ).decode("utf-8")
 
 
 def atomic_write_bytes_at(directory: int, name: str, content: bytes, *, mode: int = 0o600) -> None:
@@ -91,13 +168,20 @@ def atomic_write_text_at(directory: int, name: str, content: str, *, mode: int =
 
 
 def open_lock_at(directory: int, name: str) -> int:
-    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC
+    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NONBLOCK
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     descriptor = os.open(_file_name(name), flags, 0o600, dir_fd=directory)
     try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or info.st_nlink != 1
+        ):
             raise OSError("Refusing an unsafe lock file.")
+        current_flags = fcntl.fcntl(descriptor, fcntl.F_GETFL)
+        fcntl.fcntl(descriptor, fcntl.F_SETFL, current_flags & ~os.O_NONBLOCK)
         os.fchmod(descriptor, 0o600)
         return descriptor
     except BaseException:

@@ -87,10 +87,14 @@ adds the systemd user service, validates and enables the bar widget, and
 preserves the Git checkout for future `omarchy plugin update` operations. It
 does not install or modify Obsidian on a fresh install. An already-enabled
 companion is updated in place. GoalWatch remains off after a first install.
-Application files are replaced transactionally: backups remain until runtime,
+The installation is one outer transaction: backups remain until runtime,
 systemd, plugin rescan, validation, bar enablement, optional Obsidian setup, and
-restoration of a previously active service have all succeeded. A late failure
-restores every prior target and the prior service state.
+restoration of a previously active service have all succeeded. It snapshots the
+Omarchy layout, runtime state, GoalWatch config, companion directory, and
+Obsidian registry as applicable. A late failure restores their exact prior
+contents and the prior service state. The installer does not live-reload a
+running Obsidian process inside this transaction; it reports when one editor
+restart is needed, so a failure cannot leave a new companion loaded in memory.
 
 If you are already working from a development checkout, run setup directly:
 
@@ -202,10 +206,11 @@ history so the user can inspect what was sent and exactly what came back.
   goal, model, sanitized request document, outcome, timing, and exact raw
   response body up to the 512 KiB safety cap.
 - Audit data is private to the local user (`0700` directory, `0600` files).
-  Oldest records and their screenshots are removed at the first of 7 days,
+  Oldest completed records, screenshots, and response files are removed at the first of 7 days,
   2,000 requests, or 512 MiB of indexed screenshot/response content. The audit
-  response-body share is capped at 224 MiB, the database at 256 MiB, and its
-  WAL at 8 MiB. **Clear All** and
+  response-body share is capped at 224 MiB, its single database snapshot at
+  256 MiB, and the directory at 10,000 entries. In-flight requests are never
+  evicted to make room. **Clear All** and
   uninstall with `--purge` remove the remaining history; stop watching before
   clearing it.
 - The Gemini key is stored in the desktop Secret Service and never appears in config, argv, UI state, metrics, or logs.
@@ -215,11 +220,15 @@ history so the user can inspect what was sent and exactly what came back.
 - Child-process and Gemini response streams have hard byte limits. Gemini's
   total deadline uses a monotonic budget plus a process alarm; redirects are
   rejected before the API key can be replayed.
-- Private config, runtime state, metrics, audit, and Markdown reads use
-  no-follow, descriptor-anchored I/O. SQLite connects through the validated
-  database descriptor rather than reopening its pathname.
+- Private config, runtime state, metrics, audit, Markdown, and Obsidian registry
+  reads open nonblocking with no-follow, then validate ownership, regular-file
+  type, link count, and byte size before reading from that descriptor.
+- SQLite operates only on private in-memory connections. Metrics and audit are
+  persisted as one bounded SQLite snapshot read through a validated descriptor
+  and atomically replaced; SQLite never opens a persistent pathname and cannot
+  create or follow `-wal`, `-shm`, or journal sidecars.
 - Local metrics retain at most 90 days, 30,000 checks, 5,000 sessions, and a
-  16 MiB database with a 4 MiB WAL.
+  16 MiB database snapshot.
 - Stopping GoalWatch cancels future captures and requests.
 
 See [docs/PRIVACY.md](docs/PRIVACY.md) for the exact data boundary and

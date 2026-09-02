@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,6 +8,12 @@ from goalwatch.state import read_state, write_state
 
 
 class StateIoTests(unittest.TestCase):
+    def test_fifo_state_returns_defaults_without_waiting_for_a_writer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "state.json"
+            os.mkfifo(target)
+            self.assertEqual(read_state(target)["state"], "OFF")
+
     def test_state_symlink_is_replaced_without_touching_its_target(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

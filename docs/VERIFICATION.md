@@ -1,4 +1,4 @@
-# GoalWatch 0.3.1 verification report
+# GoalWatch 0.3.2 verification report
 
 Verified on 2026-09-01 with Omarchy 4.0.2, Quickshell 0.3.1, and Python 3.14.
 
@@ -6,7 +6,7 @@ Verified on 2026-09-01 with Omarchy 4.0.2, Quickshell 0.3.1, and Python 3.14.
 
 | Check | Result | Budget |
 |---|---:|---:|
-| Executable install size, including both plugins | 208,852 bytes | < 1 MiB |
+| Executable install size, including both plugins | 213,993 bytes | < 1 MiB |
 | Sleeping daemon CPU over 60 seconds | 0.15% | <= 0.5% |
 | Maximum daemon RSS during that sample | 28,184 KiB | <= 30 MiB |
 | Real desktop capture | 145,758 bytes, 1920×1080, 69 ms | <= 1920 px long edge, < 8 MiB |
@@ -21,7 +21,7 @@ process while sleeping.
 
 ## Automated checks
 
-- 87 Python unit/integration tests pass.
+- 113 Python unit/integration tests pass.
 - Node-based Obsidian tests pass for daily-note resolution, canonical goal
   insertion, and `@goal` replacement.
 - Gemini tests use a local HTTP server and cover alert true/false, exact schema,
@@ -31,26 +31,30 @@ process while sleeping.
   original JPEG, private file modes, request-before-network ordering, HTTP and
   network failures, filtering, pagination, clearing, symlink refusal, and
   absence of the API key from every archive file.
-- Audit and metrics quota tests cover age, row, content, database-page, WAL, and
-  cascading screenshot/alert cleanup limits.
+- Audit and metrics quota tests cover age, row, content, response, database-page,
+  directory-entry, in-flight-record, and cascading attachment/alert cleanup limits.
 - Goal parsing covers latest-valid selection, malformed tails, default tools,
-  CRLF, Unicode, symlinks, invalid UTF-8, path escape, and input bounds.
+  CRLF, Unicode, symlinks, FIFOs, invalid UTF-8, path escape, and input bounds.
 - Scheduler tests use a fake monotonic clock for interval reset, a large resume
   jump without a backlog, and alert-dismiss reset.
 - Metrics tests cover focus score, latency, recovery linking, current streak,
   retention pruning, cascade deletion, and symlink refusal.
 - Security regressions cover bounded child output, deadline/process-group
-  cleanup, descriptor-relative config/state writes, private-directory symlink
-  refusal, and plain-text bounded QML rendering.
-- A forced inode replacement between SQLite descriptor validation and connect
-  is rejected without modifying the substituted target. Both databases connect
-  through the validated descriptor.
+  cleanup, nonblocking FIFO rejection, bounded Obsidian discovery,
+  descriptor-relative config/state writes, private-directory symlink refusal,
+  hardlink rejection/displacement, and plain-text bounded QML rendering.
+- SQLite is connected only to `:memory:`. Forced main-file replacement and
+  hardlinked `-wal`, `-shm`, and journal entries leave every substituted inode
+  untouched; no persistent sidecar is created. Two concurrently open audit or
+  metrics clients retain both writers' updates.
 - A deliberately slow response body is interrupted by the monotonic total
   deadline and restores the prior signal state. Malformed, boolean, negative,
   oversized, and non-object usage metadata all become audited fail-open errors.
-- A late forced shell-rescan failure proves the installer restores the prior
-  runtime, CLI, unit, documentation, QML plugin, and active-service state before
-  removing backups.
+- A forced shell-rescan failure proves early rollback. A second regression
+  succeeds through widget enablement and companion/config/registry replacement,
+  forces the final service restart to fail, and proves exact restoration of the
+  core targets, Omarchy layout, runtime, config, Obsidian state, and old active
+  service before backups are removed.
 - The distribution check rejects any `AGENT.md` or `AGENTS.md`; contribution
   guidance now lives in the inert `CONTRIBUTING.md` document.
 - Shell syntax, JavaScript syntax, JSON manifests, Omarchy plugin validation,
@@ -78,7 +82,7 @@ Run them with:
   immediately, the companion directory and registry entry were removed and
   restored, and all nine unrelated community plugins remained unchanged.
 - Re-running the default installer updated an already-authorized Obsidian
-  companion to 0.3.1 without requiring `--with-obsidian` again.
+  companion to 0.3.2 without requiring `--with-obsidian` again.
 - An update started with the service active completed with the replacement
   service active; the final acceptance cleanup then returned it to disabled/off.
 - The audit browser reported the enforced 7-day, 2,000-record, and 512 MiB

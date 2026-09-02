@@ -1,4 +1,6 @@
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -65,6 +67,15 @@ class GoalParserTests(unittest.TestCase):
             note.write_bytes(b"\xff")
             with self.assertRaises(GoalReadError):
                 read_latest_goal(str(note))
+
+    def test_fifo_markdown_is_rejected_without_waiting_for_a_writer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            note = Path(directory) / "note.md"
+            os.mkfifo(note)
+            started = time.monotonic()
+            with self.assertRaises(GoalReadError):
+                read_latest_goal(str(note))
+            self.assertLess(time.monotonic() - started, 0.5)
 
 
 if __name__ == "__main__":

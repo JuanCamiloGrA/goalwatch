@@ -40,12 +40,14 @@ Omarchy bar ── toggle/settings ───────────────
   the complete urllib exchange.
   Provider-controlled HTTP and usage metadata are validated before a decision
   can leave the client.
-- The audit store owns a descriptor-anchored SQLite index plus one mode-`0600`
-  JPEG per request. A shared file lock spans each request and viewer query; the
-  explicit clear operation requires an exclusive lock and a stopped service.
-  Request persistence is a precondition for network I/O, while response
-  persistence is a precondition for an alert. Retention is bounded by age, row,
-  content, database-page, and WAL quotas.
+- The audit store owns a bounded atomic SQLite snapshot plus one mode-`0600`
+  JPEG and one bounded raw-response file per completed new request. A lifecycle
+  lock coordinates clear with the service, and a data lock serializes every
+  load/mutate/save operation across daemon and viewer processes. Request
+  persistence is a precondition for network I/O, while response persistence is
+  a precondition for an alert. Retention is bounded by age, row, attachment,
+  response, database-byte, and directory-entry quotas; active requests are not
+  evicted.
 - Quickshell watches an atomic runtime-state file. It never receives the API key
   and does not call Gemini itself. Dynamic runtime text is length-capped and
   rendered explicitly as plain text.
@@ -58,22 +60,29 @@ Omarchy bar ── toggle/settings ───────────────
   atomically installs the companion, preserves every unrelated community
   plugin entry, and only then changes the active source. Disabling changes the
   source first, then performs idempotent companion cleanup.
-- Config, runtime state, metrics, and audit paths are anchored to no-follow
-  directory descriptors. SQLite main files are opened with `O_NOFOLLOW`,
-  checked by inode, and connected through `/proc/self/fd`; they are never
-  checked and then reopened by their mutable pathname. Atomic replacements
-  cannot traverse a substituted file symlink, and Markdown is read from one
-  no-follow descriptor after size/type checks.
+- Config, runtime state, Markdown, Obsidian registries, and persistence
+  snapshots are read through nonblocking, no-follow descriptors after
+  regular-file, owner, link-count, and size validation. Obsidian discovery also
+  caps registry bytes, entry count, field lengths, and emitted vaults.
+- SQLite receives only `:memory:` connections. Audit and metrics deserialize a
+  validated snapshot, operate under an interprocess lock, serialize within a
+  hard page/byte quota, and atomically replace one file. No persistent pathname
+  is passed to SQLite, so there is no SQLite-controlled WAL, SHM, or journal
+  pathname to race. A substituted hardlink is displaced rather than modified.
 
 ## Installation transaction
 
 The installer stages and validates runtime, CLI, unit, documentation, and QML
-before stopping the service. Each existing target is moved to a same-filesystem
-backup and no backup is discarded until daemon reload, runtime initialization,
-shell rescan, plugin validation, bar enablement, optional Obsidian setup, and
-restart of a previously active service all succeed. Any late failure removes
-the staged targets in reverse order, restores every backup, reloads systemd and
-the shell, normalizes runtime state, and restarts the old service when needed.
+before stopping the service. The outer transaction covers every installed
+target plus the exact Omarchy layout, GoalWatch runtime/config directories, and
+the selected Obsidian companion and community registry. No backup is discarded
+until daemon reload, runtime initialization, shell rescan, plugin validation,
+bar enablement, optional companion setup, and a stable restart of a previously
+active service all succeed. Obsidian live reload is suppressed during this
+window. Any late failure restores targets in reverse order, reloads systemd and
+the shell, and restarts the old service. A failed final restart is therefore
+able to restore the exact prior core, widget, config, runtime, companion, and
+registry state.
 
 ## State machine
 
@@ -113,6 +122,8 @@ Nothing under `/usr/share/omarchy` is changed.
 
 The deadline uses Python's documented
 [`signal.setitimer`](https://docs.python.org/3/library/signal.html#signal.setitimer)
-real-time timer. Descriptor paths use the documented
-[`sqlite3.connect(..., uri=True)`](https://docs.python.org/3/library/sqlite3.html#sqlite3.connect)
-URI mode after the Linux file descriptor has been opened and validated.
+real-time timer. Atomic persistence uses the documented
+[`Connection.serialize`](https://docs.python.org/3/library/sqlite3.html#sqlite3.Connection.serialize)
+and
+[`Connection.deserialize`](https://docs.python.org/3/library/sqlite3.html#sqlite3.Connection.deserialize)
+APIs only on private in-memory connections.

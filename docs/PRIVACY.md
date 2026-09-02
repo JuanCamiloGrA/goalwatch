@@ -35,11 +35,15 @@ body; a `PENDING` record means the process ended before it could complete the
 record.
 
 The archive is `${XDG_STATE_HOME:-~/.local/state}/goalwatch/audit/`. Its
-directory is mode `0700`; its SQLite database and JPEGs are mode `0600`.
-Screenshots are stored once, next to the database. The oldest records
-and screenshots are removed when any limit is reached: 7 days, 2,000 records,
-or 512 MiB of indexed screenshot/response content. The SQLite database is
-limited to 256 MiB, stored response bodies to 224 MiB, and its WAL to 8 MiB.
+directory is mode `0700`; its bounded SQLite snapshot, JPEGs, and exact raw
+response files are mode `0600`. Screenshots and new responses are each stored
+once next to the database; responses created by older releases remain readable
+in their original inline records without a destructive migration. The oldest
+completed records and their attachments are removed when any limit is reached:
+7 days, 2,000 records, or 512 MiB of indexed screenshot/response content.
+Response content is capped at 224 MiB, the database snapshot at 256 MiB, each
+response at 512 KiB, each image at 8 MiB, and the archive directory at 10,000
+entries. An in-flight request is never evicted to admit another request.
 Use **Request Audit → Clear All** while
 GoalWatch is stopped, or `uninstall.sh --purge`, to remove the retained data.
 Ordinary uninstall preserves it.
@@ -70,13 +74,20 @@ The Gemini API key is stored through the desktop Secret Service. Non-secret
 settings are saved in a mode-`0600` JSON file. The separate metrics SQLite
 database stores only timestamps, outcomes, model name, latency, token/byte
 counts, error codes, and a SHA-256 fingerprint of the goal. It is limited to 90
-days, 30,000 checks, 5,000 sessions, a 16 MiB main database, and a 4 MiB WAL.
-Private application directories are opened with `O_NOFOLLOW`; config and
-runtime-state operations are descriptor-relative. Metrics and audit databases
-are opened with `O_NOFOLLOW`, validated by inode, and handed to SQLite through
-the already-open `/proc/self/fd` descriptor so a pathname replacement cannot
-redirect the connection. Markdown uses the same check-and-use descriptor
-principle.
+days, 30,000 checks, 5,000 sessions, and a 16 MiB database snapshot. Private
+application directories are opened with `O_NOFOLLOW`; config and runtime-state
+operations are descriptor-relative. Every mutable file read opens with
+`O_NONBLOCK|O_NOFOLLOW` and validates owner, regular-file type, size, and a
+single link before consuming bounded bytes. This includes Markdown and all
+Obsidian registries, whose object counts and field lengths are also capped.
+
+Persistent SQLite path handling is deliberately absent. Audit and metrics load
+a bounded, descriptor-validated SQLite byte snapshot into `:memory:`, serialize
+under a per-store lock, and atomically replace one mode-`0600` file. SQLite
+therefore never receives a persistent pathname and never creates or reopens
+WAL, SHM, or rollback-journal sidecars. A path replaced with a symlink or
+hardlink can be rejected or atomically displaced, but its target inode is never
+opened for modification.
 
 ## Safety behavior
 

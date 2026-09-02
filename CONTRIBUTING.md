@@ -18,6 +18,13 @@ agent instruction file.
   responses belong only in the private audit archive. Never persist the API key.
 - Keep API-key replacement on stdin and storage in Secret Service.
 - A first install must leave the service disabled and off.
+- Keep installation one outer transaction. A failure after widget or optional
+  companion changes must restore exact prior core, shell, runtime, config,
+  registry, companion, and service state.
+- Persistent reads must be nonblocking, no-follow, descriptor-bound, bounded,
+  and restricted to owned single-link regular files. SQLite must remain
+  in-memory with one locked atomic snapshot; do not reintroduce pathname-opened
+  database sidecars.
 - Keep the alert on every display with exclusive keyboard focus. Escape and
   outside clicks must not dismiss it.
 - Obsidian changes must use its normal editor APIs and must not modify unrelated

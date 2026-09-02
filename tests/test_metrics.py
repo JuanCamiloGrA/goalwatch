@@ -1,10 +1,12 @@
+import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from goalwatch.metrics import MAX_METRICS_DB_BYTES, MAX_METRICS_WAL_BYTES, Metrics
+from goalwatch.database import LEGACY_AUXILIARY_SUFFIXES
+from goalwatch.metrics import MAX_METRICS_DB_BYTES, Metrics
 
 
 class MetricsTests(unittest.TestCase):
@@ -14,7 +16,7 @@ class MetricsTests(unittest.TestCase):
             outside = root / "outside"
             outside.write_text("keep", encoding="utf-8")
             (root / "metrics.sqlite3").symlink_to(outside)
-            with self.assertRaisesRegex(OSError, "unsafe metrics path"):
+            with self.assertRaises(OSError):
                 Metrics(root / "metrics.sqlite3")
             self.assertEqual(outside.read_text(encoding="utf-8"), "keep")
 
@@ -43,11 +45,18 @@ class MetricsTests(unittest.TestCase):
             check = metrics.record_check(session, "off_goal", "test")
             metrics.create_alert(check)
             old = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat(timespec="seconds")
-            metrics.connection.execute("UPDATE checks SET occurred_at=? WHERE id=?", (old, check))
-            metrics.connection.commit()
+            with metrics._operation(write=True):
+                metrics.connection.execute(
+                    "UPDATE checks SET occurred_at=? WHERE id=?", (old, check)
+                )
             metrics.prune(90)
-            self.assertEqual(metrics.connection.execute("SELECT count(*) FROM checks").fetchone()[0], 0)
-            self.assertEqual(metrics.connection.execute("SELECT count(*) FROM alerts").fetchone()[0], 0)
+            with metrics._operation(write=False):
+                self.assertEqual(
+                    metrics.connection.execute("SELECT count(*) FROM checks").fetchone()[0], 0
+                )
+                self.assertEqual(
+                    metrics.connection.execute("SELECT count(*) FROM alerts").fetchone()[0], 0
+                )
             metrics.close()
 
     def test_check_row_quota_keeps_only_the_newest_rows(self):
@@ -60,28 +69,58 @@ class MetricsTests(unittest.TestCase):
             metrics.create_alert(first)
             metrics.record_check(session, "on_goal", "test")
             metrics.record_check(session, "on_goal", "test")
-            checks = metrics.connection.execute(
-                "SELECT id FROM checks ORDER BY id"
-            ).fetchall()
-            alerts = metrics.connection.execute("SELECT count(*) FROM alerts").fetchone()[0]
+            with metrics._operation(write=False):
+                checks = metrics.connection.execute(
+                    "SELECT id FROM checks ORDER BY id"
+                ).fetchall()
+                alerts = metrics.connection.execute("SELECT count(*) FROM alerts").fetchone()[0]
             metrics.close()
         self.assertEqual(len(checks), 2)
         self.assertNotIn(first, [row[0] for row in checks])
         self.assertEqual(alerts, 0)
 
-    def test_database_and_wal_have_hard_page_limits(self):
+    def test_database_snapshot_has_a_hard_page_limit_and_no_sidecars(self):
         with tempfile.TemporaryDirectory() as directory:
-            metrics = Metrics(Path(directory) / "metrics.sqlite3")
-            page_size = int(metrics.connection.execute("PRAGMA page_size").fetchone()[0])
-            max_pages = int(
-                metrics.connection.execute("PRAGMA max_page_count").fetchone()[0]
-            )
-            journal_limit = int(
-                metrics.connection.execute("PRAGMA journal_size_limit").fetchone()[0]
-            )
+            root = Path(directory)
+            metrics = Metrics(root / "metrics.sqlite3")
+            with metrics._operation(write=False):
+                page_size = int(metrics.connection.execute("PRAGMA page_size").fetchone()[0])
+                max_pages = int(
+                    metrics.connection.execute("PRAGMA max_page_count").fetchone()[0]
+                )
             metrics.close()
+            for suffix in LEGACY_AUXILIARY_SUFFIXES:
+                self.assertFalse((root / f"metrics.sqlite3{suffix}").exists())
         self.assertLessEqual(page_size * max_pages, MAX_METRICS_DB_BYTES)
-        self.assertEqual(journal_limit, MAX_METRICS_WAL_BYTES)
+
+    def test_two_open_metrics_stores_do_not_lose_updates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "metrics.sqlite3"
+            first = Metrics(path)
+            second = Metrics(path)
+            try:
+                first_session = first.start_session()
+                second_session = second.start_session()
+                first.record_check(first_session, "on_goal", "one")
+                second.record_check(second_session, "off_goal", "two")
+                with first._operation(write=False):
+                    count = first.connection.execute("SELECT count(*) FROM checks").fetchone()[0]
+                self.assertEqual(count, 2)
+            finally:
+                second.close()
+                first.close()
+
+    def test_legacy_sidecar_hardlink_is_refused_without_touching_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "metrics.sqlite3"
+            Metrics(path).close()
+            outside = root / "outside"
+            outside.write_bytes(b"do not touch")
+            os.link(outside, root / "metrics.sqlite3-shm")
+            with self.assertRaisesRegex(OSError, "auxiliary path"):
+                Metrics(path)
+            self.assertEqual(outside.read_bytes(), b"do not touch")
 
 
 if __name__ == "__main__":

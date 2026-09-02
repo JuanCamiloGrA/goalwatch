@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import errno
-import os
 import re
-import stat
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import DEFAULT_TOOLS
+from .secureio import read_bytes_path
 
 
 GOAL_RE = re.compile(r"^\s*>\s*Current Goal:\s*(?P<goal>.+?)\s*$", re.IGNORECASE)
@@ -63,29 +62,17 @@ def read_latest_goal(path: str, default_tools: str = DEFAULT_TOOLS) -> Goal | No
     if not path:
         return None
     target = Path(path).expanduser()
-    flags = os.O_RDONLY | os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
     try:
-        descriptor = os.open(target, flags)
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode):
-            os.close(descriptor)
-            return None
-        if info.st_size > MAX_MARKDOWN_BYTES:
-            os.close(descriptor)
-            raise GoalReadError("Markdown file is larger than 10 MiB.")
-        with os.fdopen(descriptor, "rb") as handle:
-            content = handle.read(MAX_MARKDOWN_BYTES + 1)
-        if len(content) > MAX_MARKDOWN_BYTES:
-            raise GoalReadError("Markdown file is larger than 10 MiB.")
+        content = read_bytes_path(target, limit=MAX_MARKDOWN_BYTES)
         text = content.decode("utf-8")
     except UnicodeDecodeError as error:
         raise GoalReadError("Markdown file is not valid UTF-8.") from error
     except OSError as error:
         if error.errno == errno.ELOOP:
             return None
-        raise GoalReadError("Markdown file could not be read.") from error
+        if error.errno in {errno.ENXIO, errno.ENODEV}:
+            return None
+        raise GoalReadError("Markdown file could not be read safely.") from error
     return parse_latest_goal(text, default_tools)
 
 

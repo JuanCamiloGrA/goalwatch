@@ -55,6 +55,12 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertEqual(load_config()["goal_source"], "manual")
 
+    def test_fifo_config_falls_back_without_waiting_for_a_writer(self):
+        path = Path(self.temporary.name) / "goalwatch" / "config.json"
+        path.parent.mkdir()
+        os.mkfifo(path)
+        self.assertEqual(load_config()["manual_goal"], "")
+
     def test_manual_goal_is_private_and_bounded(self):
         config = set_manual_goal(" Ship the release ", " Codex, Browser ")
         self.assertEqual(config["manual_goal"], "Ship the release")

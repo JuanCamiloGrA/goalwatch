@@ -19,6 +19,12 @@ REGISTRIES = (
 )
 REQUIRED_PLUGIN_FILES = ("main.js", "manifest.json")
 MAX_REGISTRY_BYTES = 1024 * 1024
+MAX_REGISTRY_VAULT_ENTRIES = 256
+MAX_DISCOVERED_VAULTS = 64
+MAX_VAULT_PATH_CHARS = 4096
+MAX_REGISTRY_KEY_CHARS = 256
+MAX_COMMUNITY_PLUGINS = 512
+MAX_PLUGIN_ID_CHARS = 256
 
 
 class ObsidianError(RuntimeError):
@@ -60,25 +66,51 @@ def discover_vaults() -> list[Path]:
     for name in REGISTRIES:
         registry = Path(os.path.expanduser(name))
         try:
-            parsed = json.loads(registry.read_text(encoding="utf-8"))
+            with directory_fd(registry.parent) as directory:
+                parsed = json.loads(
+                    read_text_at(directory, registry.name, limit=MAX_REGISTRY_BYTES)
+                )
             vaults = parsed.get("vaults", {})
         except (OSError, ValueError, AttributeError):
             continue
-        if not isinstance(vaults, dict):
+        if not isinstance(vaults, dict) or len(vaults) > MAX_REGISTRY_VAULT_ENTRIES:
             continue
-        for item in vaults.values():
-            if not isinstance(item, dict) or not item.get("path"):
+        for key, item in vaults.items():
+            if (
+                not isinstance(key, str)
+                or not key
+                or len(key) > MAX_REGISTRY_KEY_CHARS
+                or not isinstance(item, dict)
+            ):
                 continue
-            candidate = Path(str(item["path"])).expanduser().resolve()
+            raw_path = item.get("path")
+            timestamp = item.get("ts", 0)
+            if (
+                not isinstance(raw_path, str)
+                or not raw_path
+                or len(raw_path) > MAX_VAULT_PATH_CHARS
+                or any(ord(character) < 32 for character in raw_path)
+                or isinstance(timestamp, bool)
+                or not isinstance(timestamp, int)
+                or timestamp < 0
+                or timestamp > 9_223_372_036_854_775_807
+            ):
+                continue
+            try:
+                candidate = Path(raw_path).expanduser().resolve()
+            except (OSError, RuntimeError):
+                continue
             if candidate.is_dir() and (candidate / ".obsidian").is_dir():
                 entries.append(
-                    (bool(item.get("open")), int(item.get("ts") or 0), str(candidate), candidate)
+                    (item.get("open") is True, timestamp, str(candidate), candidate)
                 )
     entries.sort(reverse=True)
     result: list[Path] = []
     for _open, _timestamp, _name, path in entries:
         if path not in result:
             result.append(path)
+            if len(result) >= MAX_DISCOVERED_VAULTS:
+                break
     return result
 
 
@@ -91,6 +123,13 @@ def default_plugin_source() -> Path:
 
 
 def _validate_vault(vault: Path) -> Path:
+    raw = str(vault)
+    if (
+        not raw
+        or len(raw) > MAX_VAULT_PATH_CHARS
+        or any(ord(character) < 32 for character in raw)
+    ):
+        raise ObsidianError("The Obsidian vault path is invalid or too long.")
     candidate = vault.expanduser().resolve()
     obsidian = candidate / ".obsidian"
     if not candidate.is_dir() or not obsidian.is_dir():
@@ -132,7 +171,17 @@ def _community_plugins(vault: Path, strict: bool = True) -> tuple[Path, list[str
             )
             raise ObsidianError(message) from error
         return path, []
-    if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+    if (
+        not isinstance(parsed, list)
+        or len(parsed) > MAX_COMMUNITY_PLUGINS
+        or not all(
+            isinstance(item, str)
+            and bool(item)
+            and len(item) <= MAX_PLUGIN_ID_CHARS
+            and not any(ord(character) < 32 for character in item)
+            for item in parsed
+        )
+    ):
         if strict:
             raise ObsidianError(f"Could not update invalid plugin registry: {path}")
         return path, []
@@ -271,7 +320,12 @@ def integration_status(config: dict | None = None) -> dict:
     }
 
 
-def enable_integration(vaults: list[Path] | None = None, source: Path | None = None) -> dict:
+def enable_integration(
+    vaults: list[Path] | None = None,
+    source: Path | None = None,
+    *,
+    live_reload: bool = True,
+) -> dict:
     if not obsidian_installed() and not obsidian_running():
         raise ObsidianError(
             "Obsidian is not installed. Install and open it once, or keep using a manual goal."
@@ -300,7 +354,7 @@ def enable_integration(vaults: list[Path] | None = None, source: Path | None = N
             uninstall_plugin(vault)
         raise
     running = obsidian_running()
-    live = not running or _try_live_command(vault, "plugin:reload")
+    live = not running or (live_reload and _try_live_command(vault, "plugin:reload"))
     result = integration_status()
     result.update(
         {

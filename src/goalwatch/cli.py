@@ -332,7 +332,10 @@ def command_obsidian(arguments: argparse.Namespace) -> int:
     vaults = [Path(name).expanduser() for name in arguments.vault]
     try:
         if arguments.obsidian_action == "enable":
-            result = enable_integration(vaults or None)
+            result = enable_integration(
+                vaults or None,
+                live_reload=not arguments.defer_live_reload,
+            )
         else:
             result = disable_integration(vaults or None)
     except (ObsidianError, ConfigError, OSError) as error:
@@ -423,9 +426,11 @@ def build_parser() -> argparse.ArgumentParser:
     obsidian_integration = sub.add_parser("obsidian")
     obsidian_sub = obsidian_integration.add_subparsers(dest="obsidian_action", required=True)
     obsidian_sub.add_parser("status")
-    for name in ("enable", "disable"):
-        action = obsidian_sub.add_parser(name)
-        action.add_argument("--vault", action="append", default=[])
+    enable = obsidian_sub.add_parser("enable")
+    enable.add_argument("--vault", action="append", default=[])
+    enable.add_argument("--defer-live-reload", action="store_true", help=argparse.SUPPRESS)
+    disable = obsidian_sub.add_parser("disable")
+    disable.add_argument("--vault", action="append", default=[])
 
     config = sub.add_parser("config")
     config_sub = config.add_subparsers(dest="config_action", required=True)
