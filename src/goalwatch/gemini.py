@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import http.client
 import json
+import random
 import signal
 import threading
 import time
@@ -21,6 +22,21 @@ DEFAULT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{mod
 MAX_COMPLEMENT = 700
 MAX_RESPONSE_BYTES = 512 * 1024
 MAX_USAGE_TOKENS = 1_000_000_000
+MAX_ATTEMPTS = 3
+RETRY_TOTAL_TIMEOUT = 60
+RETRY_BASE_DELAY = 1.0
+RETRYABLE_ERROR_CODES = frozenset(
+    {
+        "deadline",
+        "network",
+        "rate_limited",
+        "http_408",
+        "http_500",
+        "http_502",
+        "http_503",
+        "http_504",
+    }
+)
 
 
 PROMPT = """You are GoalWatch, a conservative screen-activity classifier.
@@ -155,9 +171,17 @@ class GeminiClient:
         model = urllib.parse.quote(self.model, safe="-._")
         return self.endpoint.format(model=model)
 
-    def classify(self, goal: Goal, image: bytes, audit: AuditStore | None = None) -> Decision:
+    def classify(
+        self,
+        goal: Goal,
+        image: bytes,
+        audit: AuditStore | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> Decision:
         if not image or len(image) > MAX_IMAGE_BYTES:
             raise GeminiError("Screenshot exceeded the request-size guard.", "image_size")
+        request_timeout = self.timeout if timeout is None else min(self.timeout, timeout)
         prompt = PROMPT.format(goal=goal.description, tools=goal.tools)
         payload = {
             "contents": [
@@ -262,7 +286,7 @@ class GeminiClient:
                 ) from error
 
         started = time.monotonic()
-        deadline = started + self.timeout
+        deadline = started + request_timeout
         body = b""
         status = 0
         headers: dict[str, str] = {}
@@ -271,7 +295,7 @@ class GeminiClient:
             with _hard_deadline(deadline - time.monotonic()):
                 opener = urllib.request.build_opener(_NoRedirects())
                 try:
-                    with opener.open(request, timeout=self.timeout) as response:
+                    with opener.open(request, timeout=request_timeout) as response:
                         status = _http_status(getattr(response, "status", 200))
                         headers = _response_headers(response)
                         body, truncated = _read_bounded(response, MAX_RESPONSE_BYTES)
@@ -407,3 +431,48 @@ class GeminiClient:
             output_tokens=decision.output_tokens,
         )
         return decision
+
+    def classify_with_retries(
+        self,
+        goal: Goal,
+        image: bytes,
+        audit: AuditStore | None = None,
+    ) -> Decision:
+        """Classify one captured screen within a bounded transient-retry budget."""
+        started = time.monotonic()
+        deadline = started + RETRY_TOTAL_TIMEOUT
+        last_error: GeminiError | None = None
+        for attempt in range(MAX_ATTEMPTS):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                decision = self.classify(
+                    goal,
+                    image,
+                    audit=audit,
+                    timeout=remaining,
+                )
+            except GeminiError as issue:
+                last_error = issue
+                if (
+                    issue.code not in RETRYABLE_ERROR_CODES
+                    or attempt + 1 >= MAX_ATTEMPTS
+                ):
+                    raise
+                base_delay = RETRY_BASE_DELAY * (2**attempt)
+                delay = random.uniform(base_delay, base_delay * 2)
+                if deadline - time.monotonic() <= delay:
+                    break
+                time.sleep(delay)
+                continue
+            return Decision(
+                alert=decision.alert,
+                complement=decision.complement,
+                latency_ms=round((time.monotonic() - started) * 1000),
+                prompt_tokens=decision.prompt_tokens,
+                output_tokens=decision.output_tokens,
+            )
+        if last_error is not None:
+            raise last_error
+        raise GeminiError("Gemini exceeded the total retry deadline.", "deadline")

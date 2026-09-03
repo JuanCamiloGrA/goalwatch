@@ -17,6 +17,7 @@ from goalwatch.goals import Goal
 class Handler(BaseHTTPRequestHandler):
     response_text = '{"alert":false,"complement":""}'
     response_status = 200
+    response_statuses = []
     last_headers = None
     last_payload = None
     last_response_body = b""
@@ -42,7 +43,12 @@ class Handler(BaseHTTPRequestHandler):
             }
         ).encode()
         Handler.last_response_body = body
-        self.send_response(Handler.response_status)
+        status = (
+            Handler.response_statuses.pop(0)
+            if Handler.response_statuses
+            else Handler.response_status
+        )
+        self.send_response(status)
         self.send_header("content-type", "application/json")
         self.send_header(
             "content-length",
@@ -72,7 +78,9 @@ class GeminiTests(unittest.TestCase):
         return GeminiClient("private-key-value", "gemini-test", endpoint=self.endpoint)
 
     def setUp(self):
+        Handler.response_text = '{"alert":false,"complement":""}'
         Handler.response_status = 200
+        Handler.response_statuses = []
         Handler.redirect_location = ""
         Handler.declared_length = None
         Handler.usage_metadata = {"promptTokenCount": 12, "candidatesTokenCount": 4}
@@ -127,6 +135,60 @@ class GeminiTests(unittest.TestCase):
         with self.assertRaises(GeminiError) as raised:
             self.client().classify(Goal("Ship", "Codex"), b"jpeg")
         self.assertEqual(raised.exception.code, "rate_limited")
+
+    @patch("goalwatch.gemini.time.sleep")
+    @patch("goalwatch.gemini.random.uniform", return_value=1.25)
+    def test_transient_error_is_retried_and_each_attempt_is_audited(self, _random, sleep):
+        Handler.response_statuses = [503, 200]
+        with tempfile.TemporaryDirectory() as directory, AuditStore(
+            Path(directory) / "audit.sqlite3"
+        ) as audit:
+            result = self.client().classify_with_retries(
+                Goal("Ship", "Codex"), b"jpeg", audit=audit
+            )
+            records = audit.query()["records"]
+        self.assertFalse(result.alert)
+        self.assertEqual(len(Handler.paths), 2)
+        self.assertEqual([record["outcome"] for record in records], ["on_goal", "error"])
+        self.assertEqual(records[1]["error_code"], "http_503")
+        sleep.assert_called_once_with(1.25)
+
+    @patch("goalwatch.gemini.time.sleep")
+    def test_permanent_error_is_not_retried(self, sleep):
+        Handler.response_status = 403
+        with self.assertRaises(GeminiError) as raised:
+            self.client().classify_with_retries(Goal("Ship", "Codex"), b"jpeg")
+        self.assertEqual(raised.exception.code, "http_403")
+        self.assertEqual(len(Handler.paths), 1)
+        sleep.assert_not_called()
+
+    @patch("goalwatch.gemini.time.sleep")
+    @patch("goalwatch.gemini.random.uniform", side_effect=[1.25, 2.5])
+    def test_transient_errors_stop_after_two_retries(self, _random, sleep):
+        Handler.response_status = 503
+        with self.assertRaises(GeminiError) as raised:
+            self.client().classify_with_retries(Goal("Ship", "Codex"), b"jpeg")
+        self.assertEqual(raised.exception.code, "http_503")
+        self.assertEqual(len(Handler.paths), 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [1.25, 2.5])
+
+    @patch("goalwatch.gemini.time.sleep")
+    @patch("goalwatch.gemini.random.uniform", return_value=1.25)
+    @patch("goalwatch.gemini.time.monotonic", side_effect=[0, 0, 59.5])
+    def test_retry_is_skipped_when_backoff_would_exceed_total_budget(
+        self, _clock, _random, sleep
+    ):
+        client = self.client()
+        with patch.object(
+            client,
+            "classify",
+            side_effect=GeminiError("Temporarily unavailable.", "http_503"),
+        ) as classify:
+            with self.assertRaises(GeminiError) as raised:
+                client.classify_with_retries(Goal("Ship", "Codex"), b"jpeg")
+        self.assertEqual(raised.exception.code, "http_503")
+        classify.assert_called_once()
+        sleep.assert_not_called()
 
     def test_http_error_body_is_audited_exactly(self):
         Handler.response_status = 429

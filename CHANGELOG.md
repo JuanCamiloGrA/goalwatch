@@ -3,6 +3,12 @@
 Every published GoalWatch release is recorded here. Versions follow Semantic
 Versioning.
 
+## Unreleased
+
+- Retry transient Gemini failures at most twice with exponential backoff and
+  jitter inside one 60-second check budget. Each attempt remains independently
+  audited while local metrics retain one logical check.
+
 ## [1.0.0] - 2026-09-02
 
 First stable release for Omarchy.

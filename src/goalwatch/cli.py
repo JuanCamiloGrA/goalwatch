@@ -267,7 +267,9 @@ def command_run_once() -> int:
         return 1
     image = capture_desktop()
     with AuditStore() as audit:
-        decision = GeminiClient(key, config["model"]).classify(goal, image, audit=audit)
+        decision = GeminiClient(key, config["model"]).classify_with_retries(
+            goal, image, audit=audit
+        )
     emit({
         "alert": decision.alert,
         "complement": decision.complement,

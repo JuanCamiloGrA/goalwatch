@@ -49,7 +49,9 @@ def main() -> int:
             expected = bool(case["expected_alert"])
             image_path = (manifest_path.parent / str(case["image"])).resolve()
             try:
-                decision = client.classify(goal, image_path.read_bytes(), audit=audit)
+                decision = client.classify_with_retries(
+                    goal, image_path.read_bytes(), audit=audit
+                )
                 actual = decision.alert
                 if expected and actual:
                     true_positive += 1

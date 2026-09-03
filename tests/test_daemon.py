@@ -45,7 +45,7 @@ class DaemonDecisionTests(unittest.TestCase):
     @patch("goalwatch.daemon.capture_desktop", return_value=b"jpeg")
     @patch("goalwatch.daemon.GeminiClient")
     def test_on_goal_is_silent(self, client, _capture):
-        client.return_value.classify.return_value = self.decision(False)
+        client.return_value.classify_with_retries.return_value = self.decision(False)
         self.daemon._perform_check(
             {"model": "gemini-test"}, Goal("Ship release", "Codex"), "private-key"
         )
@@ -56,7 +56,7 @@ class DaemonDecisionTests(unittest.TestCase):
     @patch("goalwatch.daemon.capture_desktop", return_value=b"jpeg")
     @patch("goalwatch.daemon.GeminiClient")
     def test_off_goal_alert_persists_until_acknowledged(self, client, _capture):
-        client.return_value.classify.return_value = self.decision(
+        client.return_value.classify_with_retries.return_value = self.decision(
             True, "This screen is unrelated to Ship release."
         )
         self.daemon._perform_check(
@@ -72,7 +72,7 @@ class DaemonDecisionTests(unittest.TestCase):
     @patch("goalwatch.daemon.capture_desktop", return_value=b"jpeg")
     @patch("goalwatch.daemon.GeminiClient")
     def test_invalid_provider_metadata_cannot_terminate_or_alert(self, client, _capture):
-        client.return_value.classify.side_effect = GeminiError(
+        client.return_value.classify_with_retries.side_effect = GeminiError(
             "Gemini returned invalid usage metadata.",
             "invalid_response_metadata",
         )

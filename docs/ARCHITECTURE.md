@@ -33,11 +33,15 @@ Omarchy bar ── toggle/settings ───────────────
   audit before the network call.
   Every child process has a wall-clock deadline, byte-limited stdout/stderr,
   and an isolated process group that is killed as a unit on timeout or overflow.
-- Gemini receives one stateless `generateContent` request per due check. The
+- Gemini receives one stateless `generateContent` request per attempt. A due
+  check makes at most three attempts within one 60-second budget, retrying only
+  transient network, timeout, rate-limit, and selected 5xx failures with
+  exponential backoff and jitter. Every attempt reuses the same screenshot and
+  is audited independently, while metrics retain one logical check. The
   response uses a JSON schema with exactly `alert` and `complement`. Response
-  bodies are capped at 512 KiB, HTTP redirects are never followed, and one
-  monotonic deadline budget, enforced by `ITIMER_REAL`, covers client setup and
-  the complete urllib exchange.
+  bodies are capped at 512 KiB, HTTP redirects are never followed, and a
+  per-attempt monotonic deadline, enforced by `ITIMER_REAL`, covers client setup
+  and the complete urllib exchange.
   Provider-controlled HTTP and usage metadata are validated before a decision
   can leave the client.
 - The audit store owns a bounded atomic SQLite snapshot plus one mode-`0600`
