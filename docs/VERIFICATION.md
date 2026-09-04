@@ -21,11 +21,12 @@ process while sleeping.
 
 ## Automated checks
 
-- 113 Python unit/integration tests pass.
+- 117 Python unit/integration tests pass.
 - Node-based Obsidian tests pass for daily-note resolution, canonical goal
   insertion, and `@goal` replacement.
 - Gemini tests use a local HTTP server and cover alert true/false, exact schema,
-  extra fields, semantic mismatch, HTTP 429, network failure, usage metadata,
+  extra fields, semantic mismatch, bounded transient retries, independent
+  per-attempt auditing, HTTP 429/503, network failure, usage metadata,
   image-size rejection, response-size enforcement, and redirect rejection.
 - Audit regressions cover exact UTF-8 and binary raw-response recovery, the
   original JPEG, private file modes, request-before-network ordering, HTTP and

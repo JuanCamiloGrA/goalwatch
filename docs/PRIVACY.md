@@ -97,9 +97,11 @@ opened for modification.
   hard stdout/stderr limits, total deadlines, and process-group cleanup.
 - Gemini response bodies are capped at 512 KiB. Redirects are rejected, so the
   API-key header is never replayed to a redirect target.
-- A deadline computed from the monotonic clock and enforced with a real-time
-  process timer bounds client setup, DNS, connect, TLS, response headers, and
-  body reads as one 30-second operation. Timeout state is restored afterward.
+- Each request attempt has a deadline computed from the monotonic clock and
+  enforced with a real-time process timer. One check makes at most three
+  attempts inside a 60-second budget, with bounded backoff for transient
+  failures only. Client setup, DNS, connect, TLS, response headers, and bounded
+  body reads remain covered, and timeout state is restored after every attempt.
 - Provider-controlled HTTP status, response shape, and usage-token metadata are
   type- and range-validated inside the fail-open error boundary.
 - If the request and screenshot cannot be durably added to the audit archive,

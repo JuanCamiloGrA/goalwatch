@@ -130,7 +130,9 @@ class GoalWatchDaemon:
         try:
             image = capture_desktop()
             audit = AuditStore()
-            decision = GeminiClient(key, config["model"]).classify(goal, image, audit=audit)
+            decision = GeminiClient(key, config["model"]).classify_with_retries(
+                goal, image, audit=audit
+            )
         except CaptureError as issue:
             self.metrics.record_check(
                 self.session_id,

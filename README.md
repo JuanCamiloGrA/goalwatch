@@ -80,7 +80,9 @@ Omarchy eye ── start/stop/settings ─────────┤
                              Local metrics      ◀── metadata only
 ```
 
-Checks run on monotonic deadlines and never overlap. Before any network call,
+Checks run on monotonic deadlines and never overlap. Transient Gemini failures
+receive at most two retries with exponential backoff and jitter inside one
+60-second check budget. Before every network attempt,
 GoalWatch writes the screenshot and a key-free representation of the request to
 its private audit archive. The exact bounded response body is attached when
 Gemini completes, including HTTP failures. If the request cannot be audited, it
