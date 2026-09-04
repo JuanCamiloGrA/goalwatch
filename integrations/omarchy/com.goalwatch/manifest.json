@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "com.goalwatch",
   "name": "GoalWatch",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Juan Camilo Grisales Arias",
   "license": "MIT",
   "description": "Set a goal. Drift into social media, videos, or unrelated work, and GoalWatch takes over every display until you refocus. Gemini checks quietly in the background; no goal means no screenshots or AI requests.",
